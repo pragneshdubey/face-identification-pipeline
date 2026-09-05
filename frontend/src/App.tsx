@@ -80,7 +80,7 @@ const PIPELINE_STEPS_INITIAL: PipelineStep[] = [
   { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'pending' },
   { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'pending' },
   { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'pending' },
-  { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'pending' },
+  { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'pending' },
 ]
 
 // ─── Utility Functions ────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ function truncateFilename(name: string, maxLen = 30): string {
 function IconFaceVerify() {
   return (
     <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect width="28" height="28" rx="7" fill="#111827" />
+      <rect width="28" height="28" rx="7" fill="#0F172A" />
       <circle cx="14" cy="12" r="5.5" stroke="white" strokeWidth="1.5" fill="none" />
       <path d="M11 12c0-1.657 1.343-3 3-3" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
       <path d="M8.5 20.5c0-3.038 2.462-5.5 5.5-5.5s5.5 2.462 5.5 5.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
@@ -212,7 +212,7 @@ function Button({ children, variant = 'primary', onClick, className = '', disabl
 }) {
   const base = 'inline-flex items-center justify-center gap-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed'
   const variants = {
-    primary: 'bg-[#111827] text-white px-4 py-2 hover:bg-[#1f2937] active:bg-[#0f172a] shadow-sm',
+    primary: 'bg-[#0F172A] text-white px-4 py-2 hover:bg-[#1E293B] active:bg-[#020617] shadow-sm',
     outline: 'border border-[#E5E7EB] text-[#111827] px-4 py-2 hover:bg-gray-50 active:bg-gray-100',
     ghost: 'text-[#667085] px-3 py-1.5 hover:bg-gray-100 hover:text-[#111827]',
   }
@@ -272,20 +272,15 @@ function Navbar({ page, setPage, isOnline }: { page: Page; setPage: (p: Page) =>
   const navItems: { id: Page; label: string }[] = [
     { id: 'verification', label: 'Verification' },
     { id: 'history', label: 'History' },
-    { id: 'system', label: 'System' },
+    { id: 'system', label: 'Settings' },
   ]
 
   return (
     <header className="bg-white border-b border-[#E5E7EB] sticky top-0 z-50">
-      <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-6">
-        <div className="flex items-center gap-3 flex-shrink-0">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between gap-6">
+        <div className="flex items-center gap-3 flex-shrink-0 cursor-pointer" onClick={() => setPage('verification')}>
           <IconFaceVerify />
-          <div className="flex items-center gap-2">
-            <span className="font-bold text-[#111827] text-base tracking-tight">FaceVerify</span>
-            <span className="text-[10px] font-medium text-[#667085] bg-gray-100 border border-[#E5E7EB] px-2 py-0.5 rounded-full">
-              HH Goa 2026 · Task 3
-            </span>
-          </div>
+          <span className="font-bold text-[#111827] text-base tracking-tight">FaceVerify</span>
         </div>
 
         <nav className="flex items-center gap-1">
@@ -296,7 +291,7 @@ function Navbar({ page, setPage, isOnline }: { page: Page; setPage: (p: Page) =>
               className={cn(
                 'px-3 py-1.5 text-xs rounded-lg transition-all duration-150 font-semibold',
                 page === item.id
-                  ? 'bg-[#111827] text-white'
+                  ? 'bg-[#0F172A] text-white'
                   : 'text-[#667085] hover:text-[#111827] hover:bg-gray-50'
               )}
             >
@@ -316,6 +311,160 @@ function Navbar({ page, setPage, isOnline }: { page: Page; setPage: (p: Page) =>
         </div>
       </div>
     </header>
+  )
+}
+
+// ─── Left Column Component (Product & Capability Overview) ────────────────────
+
+function LeftColumn() {
+  const capabilities = [
+    { title: 'Face Recognition', detail: 'InsightFace · 512D embeddings' },
+    { title: 'Web Search', detail: 'Google Lens via SerpApi' },
+    { title: 'Identity Verification', detail: 'Cosine similarity matching' },
+    { title: 'Immutable Record', detail: 'Local SHA-256 ledger' },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4 bg-white">
+        <div className="mb-4">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <h2 className="text-base font-extrabold text-[#111827] tracking-tight">FaceVerify</h2>
+          </div>
+          <p className="text-xs font-bold text-emerald-700 tracking-wide">Detect. Search. Verify. Record.</p>
+          <p className="text-xs text-[#667085] mt-2 leading-relaxed">
+            Verify visual matches, validate candidates, and preserve verification evidence in a tamper-evident ledger.
+          </p>
+        </div>
+
+        <div className="space-y-3 pt-3 border-t border-[#E5E7EB]">
+          {capabilities.map((cap, i) => (
+            <div key={i} className="flex items-start gap-2.5">
+              <div className="w-5 h-5 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0 mt-0.5 border border-emerald-100">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-xs font-bold text-[#111827] leading-snug">{cap.title}</p>
+                <p className="text-[11px] text-[#667085] leading-tight mt-0.5">{cap.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+// ─── Right Column Component (Quick Actions & How It Works) ────────────────────
+
+function RightColumn({
+  onUploadClick,
+  onAdjustRegionClick,
+  onViewHistoryClick,
+  onClearClick,
+  hasImage,
+  hasResult,
+  isRunning,
+}: {
+  onUploadClick: () => void
+  onAdjustRegionClick: () => void
+  onViewHistoryClick: () => void
+  onClearClick: () => void
+  hasImage: boolean
+  hasResult: boolean
+  isRunning: boolean
+}) {
+  const steps = [
+    'Upload a face image',
+    'Detect and extract face embedding',
+    'Search for visual matches on the web',
+    'Verify candidates using face similarity',
+    'Record verified result in local ledger',
+    'Re-verify ledger integrity',
+  ]
+
+  return (
+    <div className="space-y-4">
+      {/* Quick Actions */}
+      <Card className="p-4">
+        <h3 className="text-xs font-bold text-[#111827] uppercase tracking-wider mb-3">Quick Actions</h3>
+        <div className="space-y-2">
+          <button
+            onClick={onUploadClick}
+            disabled={isRunning}
+            className="w-full text-left p-2.5 rounded-lg border border-[#E5E7EB] hover:border-gray-300 hover:bg-gray-50 transition-all flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed group"
+          >
+            <div>
+              <p className="text-xs font-bold text-[#111827] group-hover:text-blue-600 transition-colors">Upload Image</p>
+              <p className="text-[10px] text-[#667085]">JPG, JPEG, PNG or WEBP</p>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-[#98A2B3] group-hover:text-blue-600">
+              <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+
+          <button
+            onClick={onAdjustRegionClick}
+            disabled={!hasImage || isRunning}
+            className="w-full text-left p-2.5 rounded-lg border border-[#E5E7EB] hover:border-gray-300 hover:bg-gray-50 transition-all flex items-center justify-between disabled:opacity-40 disabled:cursor-not-allowed group"
+          >
+            <div>
+              <p className="text-xs font-bold text-[#111827] group-hover:text-blue-600 transition-colors">Adjust Face Region</p>
+              <p className="text-[10px] text-[#667085]">Manually select face area</p>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-[#98A2B3] group-hover:text-blue-600">
+              <rect x="3" y="3" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" strokeDasharray="2 2" />
+            </svg>
+          </button>
+
+          <button
+            onClick={onViewHistoryClick}
+            className="w-full text-left p-2.5 rounded-lg border border-[#E5E7EB] hover:border-gray-300 hover:bg-gray-50 transition-all flex items-center justify-between group"
+          >
+            <div>
+              <p className="text-xs font-bold text-[#111827] group-hover:text-blue-600 transition-colors">View History</p>
+              <p className="text-[10px] text-[#667085]">Past verifications and records</p>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-[#98A2B3] group-hover:text-blue-600">
+              <path d="M2.5 8a5.5 5.5 0 1011 0 5.5 5.5 0 00-11 0z" stroke="currentColor" strokeWidth="1.2" />
+              <path d="M8 5.5V8l1.5 1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+          </button>
+
+          <button
+            onClick={onClearClick}
+            disabled={(!hasImage && !hasResult) || isRunning}
+            className="w-full text-left p-2.5 rounded-lg border border-red-100 hover:bg-red-50/60 transition-all flex items-center justify-between text-red-700 disabled:opacity-40 disabled:cursor-not-allowed group"
+          >
+            <div>
+              <p className="text-xs font-bold text-red-700">Clear All</p>
+              <p className="text-[10px] text-red-500">Reset and start new</p>
+            </div>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" className="text-red-400">
+              <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      </Card>
+
+      {/* How It Works */}
+      <Card className="p-4">
+        <h3 className="text-xs font-bold text-[#111827] uppercase tracking-wider mb-3">How It Works</h3>
+        <ol className="space-y-2.5">
+          {steps.map((st, i) => (
+            <li key={i} className="flex items-start gap-2.5 text-xs">
+              <span className="w-4 h-4 rounded-full bg-slate-100 text-slate-700 font-mono text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5 border border-slate-200">
+                {i + 1}
+              </span>
+              <span className="text-[#667085] leading-tight">{st}</span>
+            </li>
+          ))}
+        </ol>
+      </Card>
+    </div>
   )
 }
 
@@ -529,7 +678,10 @@ function FaceInputCard({
   onClear,
   onRun,
   pipelineState,
-  apiResult
+  apiResult,
+  fileInputRef,
+  isAdjusting,
+  setIsAdjusting,
 }: {
   imageUrl: string | null
   imageFilename: string
@@ -540,10 +692,11 @@ function FaceInputCard({
   onRun: () => void
   pipelineState: PipelineState
   apiResult: ApiResultData | null
+  fileInputRef: React.RefObject<HTMLInputElement | null>
+  isAdjusting: boolean
+  setIsAdjusting: (adj: boolean) => void
 }) {
   const [dragging, setDragging] = useState(false)
-  const [isAdjusting, setIsAdjusting] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
   const thumbImgRef = useRef<HTMLImageElement>(null)
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
 
@@ -591,12 +744,11 @@ function FaceInputCard({
   const detConfidence = apiResult?.detection_score ? apiResult.detection_score.toFixed(4) : '--'
   const embeddingGenerated = apiResult?.embedding_generated === true
 
-  // Bounding box to display on thumbnail: custom region if set, otherwise automatic InsightFace box
   const activeBbox = cropBox || (faceDetected && apiResult?.bbox ? apiResult.bbox : null)
 
   return (
-    <Card className="p-4">
-      <div className="flex items-center justify-between mb-3">
+    <Card className="p-4 sm:p-5">
+      <div className="flex items-center justify-between mb-3.5">
         <div>
           <h2 className="text-sm font-bold text-[#111827]">Face Input</h2>
           <p className="text-xs text-[#667085]">Upload an image containing a detectable face.</p>
@@ -611,23 +763,24 @@ function FaceInputCard({
         )}
       </div>
 
+      <input ref={fileInputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={onFileChange} />
+
       {!imageUrl ? (
         <div
           className={cn(
-            'border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-8 cursor-pointer transition-all duration-200',
+            'border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2.5 py-11 sm:py-14 cursor-pointer transition-all duration-200',
             dragging ? 'border-[#111827] bg-gray-50' : 'border-[#E5E7EB] hover:border-gray-300 hover:bg-gray-50/50'
           )}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
-          onClick={() => inputRef.current?.click()}
+          onClick={() => fileInputRef.current?.click()}
         >
           <IconUpload />
           <div className="text-center">
             <p className="text-sm font-semibold text-[#111827]">Drop image here or click to browse</p>
             <p className="text-xs text-[#667085]">JPG, JPEG, PNG or WEBP (Max 10 MB)</p>
           </div>
-          <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={onFileChange} />
         </div>
       ) : isAdjusting ? (
         <RegionAdjuster
@@ -718,13 +871,12 @@ function FaceInputCard({
   )
 }
 
-// ─── 2. Pipeline Stepper Component (With Filled Green Checkmark Circles) ─────
+// ─── 2. Pipeline Stepper Component ────────────────────────────────────────────
 
 function PipelineStepper({ steps }: { steps: PipelineStep[] }) {
   return (
-    <Card className="p-3.5">
+    <Card className="p-4 sm:p-4.5">
       <div className="flex items-center justify-between relative px-4">
-        {/* Render segmented connecting lines */}
         <div className="absolute left-8 right-8 top-[16px] flex items-center justify-between z-0 pointer-events-none">
           {steps.slice(0, steps.length - 1).map((step, i) => {
             const nextStep = steps[i + 1]
@@ -747,7 +899,6 @@ function PipelineStepper({ steps }: { steps: PipelineStep[] }) {
           })}
         </div>
 
-        {/* Step Nodes */}
         {steps.map((step, i) => {
           const isDone = step.state === 'done'
           const isActive = step.state === 'active'
@@ -807,7 +958,7 @@ function PipelineStepper({ steps }: { steps: PipelineStep[] }) {
   )
 }
 
-// ─── Calm Dynamic Loading Progress Component ──────────────────────────────────
+// ─── Dynamic Loading Progress Component ───────────────────────────────────────
 
 function DynamicLoadingState({
   currentStep,
@@ -1172,7 +1323,7 @@ function BlockchainProofCard({ blockchain }: { blockchain: ApiResultData['blockc
             <span className="font-mono font-bold text-[11px] text-[#059669]">{integrity}</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-[11px] text-[#667085]">On-Chain Re-verification:</span>
+            <span className="text-[11px] text-[#667085]">Ledger Re-verification:</span>
             <span className="font-mono font-bold text-[11px] text-[#059669]">{reverification}</span>
           </div>
         </div>
@@ -1271,7 +1422,13 @@ function ErrorCard({ message }: { message: string }) {
 
 // ─── Verification Page Component ──────────────────────────────────────────────
 
-function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: HistoryRecord) => void }) {
+function VerificationPage({
+  onRecordSuccess,
+  onNavigatePage,
+}: {
+  onRecordSuccess: (record: HistoryRecord) => void
+  onNavigatePage: (p: Page) => void
+}) {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [imageFilename, setImageFilename] = useState('')
@@ -1282,8 +1439,9 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
   const [loadingStep, setLoadingStep] = useState(0)
   const [apiResult, setApiResult] = useState<ApiResultData | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [isAdjusting, setIsAdjusting] = useState(false)
 
-  // Internal duration tracking (not exposed as a stopwatch in primary UI)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const timerRef = useRef<number | null>(null)
   const startTimeRef = useRef<number>(0)
@@ -1331,6 +1489,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
     setImageUrl(url)
     setSelectedFile(file || null)
     setConfirmedCropBox(null)
+    setIsAdjusting(false)
     if (file) {
       setImageFilename(file.name)
     } else {
@@ -1347,6 +1506,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
     setSelectedFile(null)
     setImageFilename('')
     setConfirmedCropBox(null)
+    setIsAdjusting(false)
     setApiResult(null)
     setErrorMessage(null)
     setLogEntries([])
@@ -1423,7 +1583,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
               { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'failed' },
               { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'skipped' },
               { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
-              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+              { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'skipped' },
             ])
             setPipelineState('search_error')
           } else if (hasMatch) {
@@ -1432,11 +1592,10 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
               { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
               { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
               { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'done' },
-              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'done' },
+              { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'done' },
             ])
             setPipelineState('success')
 
-            // Record session history
             onRecordSuccess({
               id: `rec-${Date.now()}`,
               date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
@@ -1448,13 +1607,12 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
               status: 'success'
             })
           } else {
-            // Search succeeded, but no match surpassed threshold
             setSteps([
               { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
               { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
               { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
               { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
-              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+              { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'skipped' },
             ])
             setPipelineState('failure')
 
@@ -1478,7 +1636,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
             { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'failed' },
             { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'skipped' },
             { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
-            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+            { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'skipped' },
           ])
           setPipelineState('search_error')
         } else if (hasMatch) {
@@ -1487,7 +1645,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
             { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
             { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
             { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'done' },
-            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'done' },
+            { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'done' },
           ])
           setPipelineState('success')
         } else {
@@ -1496,7 +1654,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
             { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
             { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
             { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
-            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+            { id: 5, label: 'Re-Verify', sublabel: 'Ledger Audit', state: 'skipped' },
           ])
           setPipelineState('failure')
         }
@@ -1511,66 +1669,90 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
   }
 
   return (
-    <div className="space-y-4 max-w-3xl mx-auto">
-      {/* 1. Face Input Card */}
-      <FaceInputCard
-        imageUrl={imageUrl}
-        imageFilename={imageFilename}
-        cropBox={confirmedCropBox}
-        onCropBoxChange={setConfirmedCropBox}
-        onImageSelect={handleImageSelect}
-        onClear={handleClear}
-        onRun={handleRun}
-        pipelineState={pipelineState}
-        apiResult={apiResult}
-      />
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* Left Column — Product & Capability Overview */}
+      <div className="lg:col-span-3">
+        <LeftColumn />
+      </div>
 
-      {/* 2. Pipeline Stepper */}
-      <PipelineStepper steps={steps} />
-
-      {/* Dynamic Calm Loading Progress */}
-      {pipelineState === 'loading' && (
-        <DynamicLoadingState
-          currentStep={loadingStep}
-          elapsedSeconds={elapsedSeconds}
-          candidateCount={apiResult?.candidates_evaluated}
+      {/* Center Column — Primary Verification Workspace */}
+      <div className="lg:col-span-6 space-y-4">
+        {/* 1. Face Input Card */}
+        <FaceInputCard
+          imageUrl={imageUrl}
+          imageFilename={imageFilename}
+          cropBox={confirmedCropBox}
+          onCropBoxChange={setConfirmedCropBox}
+          onImageSelect={handleImageSelect}
+          onClear={handleClear}
+          onRun={handleRun}
+          pipelineState={pipelineState}
+          apiResult={apiResult}
+          fileInputRef={fileInputRef}
+          isAdjusting={isAdjusting}
+          setIsAdjusting={setIsAdjusting}
         />
-      )}
 
-      {/* Search Error State */}
-      {pipelineState === 'search_error' && apiResult && (
-        <>
-          <SearchErrorCard result={apiResult} onRetry={handleRun} />
-          <MetricsRow result={apiResult} />
-        </>
-      )}
+        {/* 2. Pipeline Stepper */}
+        <PipelineStepper steps={steps} />
 
-      {/* Network / HTTP Error State */}
-      {pipelineState === 'error' && errorMessage && (
-        <ErrorCard message={errorMessage} />
-      )}
+        {/* Dynamic Calm Loading Progress */}
+        {pipelineState === 'loading' && (
+          <DynamicLoadingState
+            currentStep={loadingStep}
+            elapsedSeconds={elapsedSeconds}
+            candidateCount={apiResult?.candidates_evaluated}
+          />
+        )}
 
-      {/* 3. Primary Candidate Result (Verified Match or No Match) */}
-      {apiResult && (pipelineState === 'success' || pipelineState === 'failure') && (
-        <>
-          {apiResult.match_found ? (
-            <VerifiedCandidateCard result={apiResult} />
-          ) : (
-            <UnverifiedCandidateCard result={apiResult} />
-          )}
+        {/* Search Error State */}
+        {pipelineState === 'search_error' && apiResult && (
+          <>
+            <SearchErrorCard result={apiResult} onRetry={handleRun} />
+            <MetricsRow result={apiResult} />
+          </>
+        )}
 
-          {/* 4. Compact 4-column Metrics Row */}
-          <MetricsRow result={apiResult} />
+        {/* Network / HTTP Error State */}
+        {pipelineState === 'error' && errorMessage && (
+          <ErrorCard message={errorMessage} />
+        )}
 
-          {/* 5. Blockchain Proof Card (Rendered only if verified candidate match exists) */}
-          {apiResult.match_found && apiResult.blockchain && (
-            <BlockchainProofCard blockchain={apiResult.blockchain} />
-          )}
-        </>
-      )}
+        {/* 3. Primary Candidate Result (Verified Match or No Match) */}
+        {apiResult && (pipelineState === 'success' || pipelineState === 'failure') && (
+          <>
+            {apiResult.match_found ? (
+              <VerifiedCandidateCard result={apiResult} />
+            ) : (
+              <UnverifiedCandidateCard result={apiResult} />
+            )}
 
-      {/* 6. Pipeline Activity Log (Collapsible) */}
-      <PipelineActivityLog entries={logEntries} />
+            {/* 4. Compact 4-column Metrics Row */}
+            <MetricsRow result={apiResult} />
+
+            {/* 5. Blockchain Proof Card */}
+            {apiResult.match_found && apiResult.blockchain && (
+              <BlockchainProofCard blockchain={apiResult.blockchain} />
+            )}
+          </>
+        )}
+
+        {/* 6. Pipeline Activity Log (Collapsible) */}
+        <PipelineActivityLog entries={logEntries} />
+      </div>
+
+      {/* Right Column — Quick Actions & How It Works */}
+      <div className="lg:col-span-3">
+        <RightColumn
+          onUploadClick={() => fileInputRef.current?.click()}
+          onAdjustRegionClick={() => setIsAdjusting(true)}
+          onViewHistoryClick={() => onNavigatePage('history')}
+          onClearClick={handleClear}
+          hasImage={!!imageUrl}
+          hasResult={!!apiResult}
+          isRunning={pipelineState === 'loading'}
+        />
+      </div>
     </div>
   )
 }
@@ -1579,7 +1761,7 @@ function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: Histo
 
 function HistoryPage({ historyList }: { historyList: HistoryRecord[] }) {
   return (
-    <div className="space-y-4 max-w-3xl mx-auto">
+    <div className="space-y-4 max-w-5xl mx-auto">
       <div>
         <h1 className="text-xl font-bold text-[#111827] tracking-tight mb-0.5">Verification History</h1>
         <p className="text-xs text-[#667085]">Recorded verification runs during current session.</p>
@@ -1644,7 +1826,7 @@ function SystemPage({ healthData, isOnline }: { healthData: SystemHealth | null;
   ]
 
   return (
-    <div className="space-y-4 max-w-3xl mx-auto">
+    <div className="space-y-4 max-w-5xl mx-auto">
       <div>
         <h1 className="text-xl font-bold text-[#111827] tracking-tight mb-0.5">System Configuration</h1>
         <p className="text-xs text-[#667085]">Active pipeline configuration parameters from live API health check.</p>
@@ -1706,10 +1888,10 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-full bg-[#F7F8FA]">
+    <div className="min-h-full bg-[#F8FAFC]">
       <Navbar page={page} setPage={setPage} isOnline={isOnline} />
-      <main className="max-w-4xl mx-auto px-4 py-6">
-        {page === 'verification' && <VerificationPage onRecordSuccess={handleRecordSuccess} />}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {page === 'verification' && <VerificationPage onRecordSuccess={handleRecordSuccess} onNavigatePage={setPage} />}
         {page === 'history' && <HistoryPage historyList={historyList} />}
         {page === 'system' && <SystemPage healthData={healthData} isOnline={isOnline} />}
       </main>
