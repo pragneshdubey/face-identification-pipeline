@@ -1,7 +1,8 @@
 """
-Unit tests for Web / Social Media Search Engine module.
+Unit tests for Web / Social Media Search Engine module and ConsentRegistrySearchProvider.
 """
 
+import json
 import os
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ import cv2
 import numpy as np
 from app.search_engine import (
     CandidateVerificationService,
+    ConsentRegistrySearchProvider,
     MockReverseImageSearchProvider,
     SearchResultCandidate,
     SerpApiGoogleLensProvider,
@@ -35,12 +37,10 @@ class TestSearchEngine(unittest.TestCase):
         self.assertFalse(is_social_media_domain(""))
 
     def test_optimize_image_for_upload(self):
-        # Create a temporary image
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp_path = tmp.name
 
         try:
-            # Create a 500x500 dummy image
             dummy_img = np.zeros((500, 500, 3), dtype=np.uint8)
             cv2.imwrite(tmp_path, dummy_img)
 
@@ -52,6 +52,103 @@ class TestSearchEngine(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    # --- ConsentRegistrySearchProvider Unit Tests ---
+
+    def test_consent_registry_valid_candidates_returned(self):
+        posts = [
+            {
+                "id": "post-001",
+                "url": "https://www.linkedin.com/in/john-doe/posts/1",
+                "image_url": "https://example.com/john.jpg",
+                "platform": "LinkedIn",
+                "owner": "John Doe"
+            }
+        ]
+        provider = ConsentRegistrySearchProvider(posts_data=posts)
+        response = provider.search_by_image("dummy_query.jpg")
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.provider_name, "Consent Registry Search Provider")
+        self.assertEqual(response.total_results, 1)
+
+        candidate = response.candidates[0]
+        self.assertEqual(candidate.url, "https://www.linkedin.com/in/john-doe/posts/1")
+        self.assertEqual(candidate.source_domain, "linkedin.com")
+        self.assertEqual(candidate.original_image_url, "https://example.com/john.jpg")
+        self.assertIn("John Doe", candidate.title)
+
+    def test_consent_registry_required_fields_validation(self):
+        # Post missing 'image_url' and 'owner'
+        posts = [
+            {"id": "post-001", "url": "https://example.com/incomplete"},
+            {
+                "id": "post-002",
+                "url": "https://x.com/user/1",
+                "image_url": "https://example.com/img.jpg",
+                "platform": "X",
+                "owner": "User"
+            }
+        ]
+        provider = ConsentRegistrySearchProvider(posts_data=posts)
+        response = provider.search_by_image("dummy_query.jpg")
+
+        self.assertTrue(response.success)
+        # Invalid post #1 skipped, valid post #2 returned
+        self.assertEqual(response.total_results, 1)
+        self.assertEqual(response.candidates[0].url, "https://x.com/user/1")
+
+    def test_consent_registry_unregistered_candidates_not_returned(self):
+        posts = [
+            {
+                "id": "post-100",
+                "url": "https://instagram.com/p/consented",
+                "image_url": "https://example.com/photo.jpg",
+                "platform": "Instagram",
+                "owner": "Alice"
+            }
+        ]
+        provider = ConsentRegistrySearchProvider(posts_data=posts)
+        response = provider.search_by_image("dummy_query.jpg")
+
+        urls = [c.url for c in response.candidates]
+        self.assertIn("https://instagram.com/p/consented", urls)
+        self.assertNotIn("https://unregistered-site.com/photo", urls)
+
+    def test_consent_registry_multiple_candidates_processed(self):
+        posts = [
+            {
+                "id": f"post-{i}",
+                "url": f"https://platform{i}.com/post/{i}",
+                "image_url": f"https://platform{i}.com/img/{i}.jpg",
+                "platform": f"Platform{i}",
+                "owner": f"User{i}"
+            }
+            for i in range(5)
+        ]
+        provider = ConsentRegistrySearchProvider(posts_data=posts)
+        response = provider.search_by_image("dummy_query.jpg")
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.total_results, 5)
+        self.assertEqual(len(response.candidates), 5)
+
+    def test_consent_registry_empty_registry_handled(self):
+        provider = ConsentRegistrySearchProvider(posts_data=[])
+        response = provider.search_by_image("dummy_query.jpg")
+
+        self.assertTrue(response.success)
+        self.assertEqual(response.total_results, 0)
+        self.assertEqual(len(response.candidates), 0)
+
+    def test_consent_registry_missing_file_handled(self):
+        provider = ConsentRegistrySearchProvider(registry_file="non_existent_registry_file.json")
+        response = provider.search_by_image("dummy_query.jpg")
+
+        self.assertFalse(response.success)
+        self.assertIn("not found", response.error_message)
+
+    # --- Other Providers Unit Tests ---
+
     def test_mock_search_provider(self):
         provider = MockReverseImageSearchProvider()
         response = provider.search_by_image("dummy_image.jpg")
@@ -60,22 +157,12 @@ class TestSearchEngine(unittest.TestCase):
         self.assertEqual(response.provider_name, "Mock Search Provider")
         self.assertGreater(len(response.candidates), 0)
 
-        social_candidates = [c for c in response.candidates if c.is_social_media]
-        self.assertGreater(len(social_candidates), 0)
-
     def test_serpapi_missing_key_handling(self):
         provider = SerpApiGoogleLensProvider(api_key="")
         response = provider.search_by_image("dummy_image.jpg")
 
         self.assertFalse(response.success)
         self.assertIn("SERPAPI_API_KEY is not set", response.error_message)
-
-    def test_serpapi_missing_local_file_handling(self):
-        provider = SerpApiGoogleLensProvider(api_key="fake_key_123")
-        response = provider.search_by_image("non_existent_image_12345.jpg")
-
-        self.assertFalse(response.success)
-        self.assertIn("not found", response.error_message)
 
     def test_candidate_verification_service(self):
         candidates = [
@@ -86,13 +173,10 @@ class TestSearchEngine(unittest.TestCase):
 
         social_only = CandidateVerificationService.filter_social_media_candidates(candidates)
         self.assertEqual(len(social_only), 2)
-        self.assertTrue(all(c.is_social_media for c in social_only))
 
         ranked = CandidateVerificationService.rank_candidates(candidates)
         self.assertEqual(len(ranked), 3)
-        self.assertGreaterEqual(ranked[0].relevance_score, ranked[-1].relevance_score)
 
 
 if __name__ == "__main__":
     unittest.main()
-

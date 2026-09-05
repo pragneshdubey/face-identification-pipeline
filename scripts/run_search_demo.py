@@ -1,15 +1,14 @@
 """
-Demo script to execute Web / Social Media Reverse Image Search using SerpApi Google Lens.
+Demo script to execute Reverse Image Search using Web or Consent Registry providers.
 
 Usage:
-  python scripts/run_search_demo.py [--image path/to/image.jpg] [--use-mock]
+  python scripts/run_search_demo.py [--image path/to/image.jpg] [--provider {web,consent,mock}]
 """
 
 import argparse
 import os
 import sys
 
-# Ensure UTF-8 output encoding for Windows terminal
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -23,28 +22,32 @@ load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 from app.search_engine import (
     CandidateVerificationService,
+    ConsentRegistrySearchProvider,
     MockReverseImageSearchProvider,
     SerpApiGoogleLensProvider,
 )
 
 
-def run_search_demo(image_path: str, use_mock: bool = False):
+def run_search_demo(image_path: str, provider_name: str = "web"):
     print("==========================================================")
-    print("      REVERSE IMAGE SEARCH DEMO (SERPAPI GOOGLE LENS)    ")
+    print("        REVERSE IMAGE SEARCH DEMO (SERPAPI / REGISTRY)   ")
     print("==========================================================")
 
-    api_key = os.environ.get("SERPAPI_API_KEY")
-    if not api_key and not use_mock:
-        print("[!] Warning: SERPAPI_API_KEY is not set in environment or .env file.")
-        print("    Falling back to Mock Reverse Image Search Provider.")
-        use_mock = True
-
-    if use_mock:
+    p_lower = provider_name.lower()
+    if p_lower in {"web", "serpapi"}:
+        api_key = os.environ.get("SERPAPI_API_KEY")
+        if not api_key:
+            print("[-] Error: SERPAPI_API_KEY not set in environment or .env file.")
+            return
+        provider = SerpApiGoogleLensProvider(api_key=api_key)
+        print("[+] Using Provider: SerpApi Google Lens Provider (Genuine Web Search)")
+    elif p_lower == "mock":
         provider = MockReverseImageSearchProvider()
         print("[+] Using Provider: Mock Reverse Image Search Provider")
     else:
-        provider = SerpApiGoogleLensProvider(api_key=api_key)
-        print("[+] Using Provider: SerpApi Google Lens Provider")
+        registry_file = os.path.join(PROJECT_ROOT, "data", "known_posts.json")
+        provider = ConsentRegistrySearchProvider(registry_file=registry_file)
+        print(f"[+] Using Provider: Consent Registry Search Provider ('{registry_file}')")
 
     print(f"[+] Query Image: '{image_path}'")
     print("----------------------------------------------------------")
@@ -77,7 +80,7 @@ def run_search_demo(image_path: str, use_mock: bool = False):
             print(f"      Thumbnail    : {cand.thumbnail_url or 'N/A'}")
             print()
 
-    print(f"--- All Extracted Web Candidates ({len(ranked)}) ---")
+    print(f"--- All Extracted Candidates ({len(ranked)}) ---")
     for idx, cand in enumerate(ranked[:5], start=1):
         social_flag = "[SOCIAL MEDIA]" if cand.is_social_media else "[WEB PAGE]"
         title = cand.title.encode('ascii', errors='replace').decode('ascii')
@@ -90,9 +93,13 @@ def run_search_demo(image_path: str, use_mock: bool = False):
 
 
 if __name__ == "__main__":
+    default_img = os.path.join(PROJECT_ROOT, "data", "test_images", "pragnesh_profile.jpg")
+    if not os.path.isfile(default_img):
+        default_img = os.path.join(PROJECT_ROOT, "data", "test_images", "consented_user.jpg")
+
     parser = argparse.ArgumentParser(description="Run Reverse Image Search Demo.")
-    parser.add_argument("--image", type=str, default=os.path.join(PROJECT_ROOT, "data", "test_images", "Akshay_Kumar_National_Award_for_Padman_(cropped).jpg.webp"), help="Path to query image")
-    parser.add_argument("--use-mock", action="store_true", help="Force mock search provider")
+    parser.add_argument("--image", type=str, default=default_img, help="Path to query image")
+    parser.add_argument("--provider", type=str, default="web", choices=["web", "consent", "mock", "serpapi"], help="Search provider (default: web)")
     args = parser.parse_args()
 
-    run_search_demo(image_path=args.image, use_mock=args.use_mock)
+    run_search_demo(image_path=args.image, provider_name=args.provider)

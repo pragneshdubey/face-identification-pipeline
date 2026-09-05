@@ -1,9 +1,9 @@
 """
-Full Pipeline Integration Demo Script:
-  Face Input -> Face Identification -> Reverse Image Search -> Candidate Face Verification -> SHA-256 Fingerprint -> Blockchain Upload & Verification
+Full Pipeline Integration Script:
+  FACE -> WEB SEARCH / CONSENT SEARCH -> CANDIDATES FOUND -> FACE VERIFICATION -> VERIFIED MATCH -> SHA-256 -> BLOCKCHAIN -> CHAIN INTEGRITY -> RE-VERIFICATION -> VERIFIED
 
 Usage:
-  python scripts/run_full_pipeline.py [--image path/to/image.jpg] [--threshold 0.5] [--use-mock]
+  python scripts/run_full_pipeline.py [--image path/to/image.jpg] [--threshold 0.5] [--provider {web,consent,mock}]
 """
 
 import argparse
@@ -11,7 +11,6 @@ import datetime
 import logging
 import os
 import sys
-import numpy as np
 
 from dotenv import load_dotenv
 
@@ -31,21 +30,23 @@ from app.blockchain import LocalBlockchainService, compute_sha256_fingerprint
 from app.face_engine import FaceIdentificationEngine, normalize_embedding
 from app.search_engine import (
     CandidateFaceVerifier,
+    ConsentRegistrySearchProvider,
     MockReverseImageSearchProvider,
     SerpApiGoogleLensProvider,
 )
 
 
-def run_pipeline(image_path: str, face_threshold: float = 0.5, use_mock: bool = False):
+def run_pipeline(
+    image_path: str,
+    face_threshold: float = 0.5,
+    provider_name: str = "web"
+):
     print("==========================================================")
     print("  FACE IDENTIFICATION & BLOCKCHAIN VERIFICATION PIPELINE  ")
     print("==========================================================")
     print(f"Query Image Path      : {image_path}")
     print(f"Face Similarity Cutoff: {face_threshold}")
-
-    if not os.path.isfile(image_path):
-        print(f"[-] Error: Target query image not found: '{image_path}'")
-        return
+    print(f"Selected Search Mode  : {provider_name.upper()}")
 
     # -----------------------------------------------------------------
     # STAGE 1: Face Detection & Embedding Generation
@@ -54,40 +55,44 @@ def run_pipeline(image_path: str, face_threshold: float = 0.5, use_mock: bool = 
     face_engine = FaceIdentificationEngine(threshold=face_threshold)
     query_emb = None
 
-    img, err = face_engine.load_image(image_path)
-    if img is None:
-        print(f"[-] Image Loading Error: {err}")
-        return
+    if os.path.isfile(image_path):
+        img, err = face_engine.load_image(image_path)
+        if img is not None:
+            query_faces = face_engine.extract_faces(img)
+            if query_faces:
+                query_emb = query_faces[0]["embedding"]
+                det_score = query_faces[0].get("det_score", 1.0)
+                bbox = query_faces[0]["bbox"]
+                print(f"  -> Face detected! Count: {len(query_faces)} | BBox: {bbox} | Det Score: {det_score:.4f} | 512D Embedding generated.")
 
-    query_faces = face_engine.extract_faces(img)
-    if query_faces:
-        query_emb = query_faces[0]["embedding"]
-        det_score = query_faces[0].get("det_score", 1.0)
-        bbox = query_faces[0]["bbox"]
-        print(f"  -> Face detected! Count: {len(query_faces)} | BBox: {bbox} | Det Score: {det_score:.4f} | 512D Embedding generated.")
-    else:
-        if use_mock:
-            print("  -> [Mock Fallback] Generating synthetic 512D face embedding for pipeline demonstration.")
-            np.random.seed(42)
-            query_emb = normalize_embedding(np.random.randn(512).astype(np.float32))
+    if query_emb is None:
+        if not os.path.isfile(image_path):
+            print(f"[-] Error: Query image file not found: '{image_path}'")
+            print("    Please provide a valid input face image path.")
+            return
         else:
             print("[-] Error: No human faces detected in query image.")
             return
 
     # -----------------------------------------------------------------
-    # STAGE 2: Reverse Image Search
+    # STAGE 2: Search Stage (Web / Consent Registry / Mock)
     # -----------------------------------------------------------------
-    api_key = os.environ.get("SERPAPI_API_KEY")
-    if not api_key and not use_mock:
-        print("\n[!] SERPAPI_API_KEY not set. Using Mock Reverse Image Search Provider.")
-        use_mock = True
-
-    if use_mock:
-        search_provider = MockReverseImageSearchProvider()
-        print("\n[SEARCH] Executing Reverse Image Search (Mock Mode)...")
-    else:
+    p_lower = provider_name.lower()
+    if p_lower in {"web", "serpapi"}:
+        api_key = os.environ.get("SERPAPI_API_KEY")
+        if not api_key:
+            print("[-] Error: SERPAPI_API_KEY not set in environment or .env file.")
+            print("    Please set SERPAPI_API_KEY or run with '--provider consent' / '--provider mock'.")
+            return
         search_provider = SerpApiGoogleLensProvider(api_key=api_key)
-        print("\n[SEARCH] Executing Genuine SerpApi Google Lens Search...")
+        print("\n[WEB SEARCH] Executing Genuine Runtime Reverse Image Search (SerpApi Google Lens)...")
+    elif p_lower == "mock":
+        search_provider = MockReverseImageSearchProvider()
+        print("\n[MOCK SEARCH] Executing Mock Reverse Image Search...")
+    else:
+        registry_file = os.path.join(PROJECT_ROOT, "data", "known_posts.json")
+        search_provider = ConsentRegistrySearchProvider(registry_file=registry_file)
+        print(f"\n[CONSENT-SCOPED SEARCH] Searching authorized post corpus '{registry_file}'...")
 
     search_response = search_provider.search_by_image(image_path)
     if not search_response.success:
@@ -104,18 +109,7 @@ def run_pipeline(image_path: str, face_threshold: float = 0.5, use_mock: bool = 
         stop_on_first_match=True
     )
 
-    if use_mock:
-        # In mock mode, patch verify_candidate to return a verified match for candidate 1
-        cand1 = search_response.candidates[0]
-        results = [
-            verifier.verify_candidate(query_emb, cand1)
-        ]
-        results[0].is_verified_match = True
-        results[0].verification_status = "VERIFIED_MATCH"
-        results[0].face_similarity_score = 0.8842
-    else:
-        results = verifier.verify_search_candidates(query_emb, search_response.candidates)
-
+    results = verifier.verify_search_candidates(query_emb, search_response.candidates)
     verified_matches = [r for r in results if r.is_verified_match]
 
     if not verified_matches:
@@ -182,12 +176,14 @@ def run_pipeline(image_path: str, face_threshold: float = 0.5, use_mock: bool = 
 
 
 if __name__ == "__main__":
-    default_img = os.path.join(PROJECT_ROOT, "data", "test_images", "Akshay_Kumar_National_Award_for_Padman_(cropped).jpg.webp")
+    default_img = os.path.join(PROJECT_ROOT, "data", "test_images", "pragnesh_profile.jpg")
+    if not os.path.isfile(default_img):
+        default_img = os.path.join(PROJECT_ROOT, "data", "test_images", "consented_user.jpg")
 
     parser = argparse.ArgumentParser(description="Run Full Face Identification, Search & Blockchain Verification Pipeline.")
     parser.add_argument("--image", type=str, default=default_img, help="Path to input face image")
     parser.add_argument("--threshold", type=float, default=0.5, help="Face similarity threshold (default: 0.5)")
-    parser.add_argument("--use-mock", action="store_true", help="Force mock search provider")
+    parser.add_argument("--provider", type=str, default="web", choices=["web", "consent", "mock", "serpapi"], help="Search provider (default: web)")
     args = parser.parse_args()
 
-    run_pipeline(image_path=args.image, face_threshold=args.threshold, use_mock=args.use_mock)
+    run_pipeline(image_path=args.image, face_threshold=args.threshold, provider_name=args.provider)

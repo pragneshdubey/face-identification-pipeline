@@ -1,13 +1,14 @@
 """
-Web and Social Media Search Engine Module for Reverse Image Search.
+Web and Social Media Search Engine Module for Reverse Image Search and Consent-Scoped Search.
 
-Provides provider abstraction, SerpApi Google Lens integration,
-and candidate verification service for identifying face image matches online.
+Provides provider abstraction, ConsentRegistrySearchProvider, SerpApi Google Lens integration,
+and candidate verification service for identifying face image matches.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import io
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple, Set, Union
@@ -140,7 +141,6 @@ def optimize_image_for_upload(image_path: str, max_bytes: int = 500 * 1024) -> T
     if file_size <= max_bytes and ext in {".jpg", ".jpeg", ".png", ".webp"}:
         return raw_bytes, mime_type
 
-    # If oversize or format conversion needed, resize using OpenCV
     img = cv2.imread(image_path)
     if img is None:
         return raw_bytes, mime_type
@@ -158,7 +158,6 @@ def optimize_image_for_upload(image_path: str, max_bytes: int = 500 * 1024) -> T
                 return encoded_bytes, mime_type
         quality -= 15
 
-    # If quality reduction isn't enough, downscale dimensions
     scale = 0.75
     while scale > 0.1:
         new_w = max(100, int(img.shape[1] * scale))
@@ -194,9 +193,126 @@ class BaseReverseImageSearchProvider(ABC):
         pass
 
 
+class ConsentRegistrySearchProvider(BaseReverseImageSearchProvider):
+    """
+    Default Search Provider searching only a controlled registry of posts/images
+    explicitly authorized by consenting participants (data/known_posts.json).
+    """
+
+    REQUIRED_FIELDS = {"id", "url", "image_url", "platform", "owner"}
+
+    def __init__(
+        self,
+        registry_file: Optional[str] = None,
+        posts_data: Optional[List[Dict[str, Any]]] = None
+    ):
+        """
+        Initializes the Consent Registry Search Provider.
+        
+        Args:
+            registry_file: Path to known_posts.json file.
+            posts_data: Explicit list of post dicts (for testing).
+        """
+        if registry_file is None and posts_data is None:
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            registry_file = os.path.join(project_root, "data", "known_posts.json")
+
+        self.registry_file = registry_file
+        self._explicit_posts = posts_data
+
+    def load_posts(self) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """
+        Loads and validates consented post entries from registry file or explicit list.
+        
+        Returns:
+            Tuple of (list of valid post dicts, error message or None).
+        """
+        if self._explicit_posts is not None:
+            posts = self._explicit_posts
+        else:
+            if not self.registry_file or not os.path.isfile(self.registry_file):
+                return [], f"Consent registry file not found: '{self.registry_file}'"
+
+            try:
+                with open(self.registry_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                posts = data.get("posts", [])
+            except Exception as e:
+                return [], f"Failed to parse consent registry file '{self.registry_file}': {str(e)}"
+
+        valid_posts = []
+        for idx, post in enumerate(posts):
+            if not isinstance(post, dict):
+                continue
+            missing = self.REQUIRED_FIELDS - set(post.keys())
+            if missing:
+                logger.warning(f"[ConsentRegistry] Post index #{idx} missing required fields {missing}. Skipping.")
+                continue
+            valid_posts.append(post)
+
+        return valid_posts, None
+
+    def search_by_image(self, image_input: str) -> SearchResponse:
+        """
+        Queries the authorized consent registry for search candidates.
+        
+        Args:
+            image_input: Input query image file path or URL.
+            
+        Returns:
+            SearchResponse object containing registered candidates.
+        """
+        provider_name = "Consent Registry Search Provider"
+        log_info = {
+            "registry_file": self.registry_file,
+            "query_input": image_input
+        }
+
+        logger.info(f"[CONSENT-SCOPED SEARCH] Query Input: '{image_input}' using {provider_name}")
+
+        posts, err = self.load_posts()
+        if err:
+            logger.error(f"[ConsentRegistry] {err}")
+            return SearchResponse(
+                success=False,
+                query_image=image_input,
+                provider_name=provider_name,
+                error_message=err,
+                log_info=log_info
+            )
+
+        candidates: List[SearchResultCandidate] = []
+        for post in posts:
+            domain = extract_domain(post["url"]) or f"{post['platform'].lower()}.com"
+            title = f"Authorized Post by {post['owner']} on {post['platform']}"
+
+            candidate = SearchResultCandidate(
+                title=title,
+                url=post["url"],
+                source_domain=domain,
+                thumbnail_url=post["image_url"],
+                original_image_url=post["image_url"],
+                is_social_media=is_social_media_domain(domain) or True,
+                raw_metadata=post
+            )
+            candidates.append(candidate)
+
+        log_info["total_candidates"] = len(candidates)
+        logger.info(f"[CANDIDATES FOUND] Total consent-scoped candidates retrieved: {len(candidates)}")
+
+        return SearchResponse(
+            success=True,
+            query_image=image_input,
+            provider_name=provider_name,
+            candidates=candidates,
+            total_results=len(candidates),
+            log_info=log_info
+        )
+
+
 class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
     """
-    Reverse Image Search Provider using SerpApi Google Lens Engine.
+    Optional Reverse Image Search Provider using SerpApi Google Lens Engine.
     """
 
     SEARCH_ENDPOINT = "https://serpapi.com/search.json"
@@ -210,6 +326,54 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
             api_key: SerpApi API Key string. Defaults to SERPAPI_API_KEY environment variable.
         """
         self.api_key = api_key or os.environ.get("SERPAPI_API_KEY")
+
+    def _create_face_crop_if_possible(self, image_path: str) -> Tuple[str, bool]:
+        """
+        Detects faces in query image using InsightFace. If a face is detected, crops it
+        with ~25% margin and saves to a temporary image file for face-focused Lens search.
+        
+        Args:
+            image_path: Local path to query image.
+            
+        Returns:
+            Tuple of (path_to_use, is_cropped_boolean).
+        """
+        try:
+            img, err = FaceIdentificationEngine.load_image(image_path)
+            if img is None:
+                return image_path, False
+
+            face_engine = FaceIdentificationEngine()
+            faces = face_engine.extract_faces(img)
+            if not faces or "bbox" not in faces[0]:
+                logger.info("[FACE CROP] No face detected in query image. Using full image for Lens search.")
+                return image_path, False
+
+            bbox = faces[0]["bbox"]  # (left, top, right, bottom)
+            x1, y1, x2, y2 = bbox
+            h, w, _ = img.shape
+
+            margin_x = int((x2 - x1) * 0.25)
+            margin_y = int((y2 - y1) * 0.25)
+
+            crop_x1 = max(0, x1 - margin_x)
+            crop_y1 = max(0, y1 - margin_y)
+            crop_x2 = min(w, x2 + margin_x)
+            crop_y2 = min(h, y2 + margin_y)
+
+            face_crop = img[crop_y1:crop_y2, crop_x1:crop_x2]
+            
+            temp_crop_dir = os.path.join(os.path.dirname(image_path), ".face_crops")
+            os.makedirs(temp_crop_dir, exist_ok=True)
+            crop_filename = f"crop_{os.path.basename(image_path)}"
+            crop_path = os.path.join(temp_crop_dir, crop_filename)
+            
+            cv2.imwrite(crop_path, face_crop)
+            logger.info(f"[FACE CROP] Created face crop region ({crop_x2-crop_x1}x{crop_y2-crop_y1}) for face-focused Google Lens search.")
+            return crop_path, True
+        except Exception as e:
+            logger.warning(f"[FACE CROP] Failed to create face crop: {e}. Falling back to full image.")
+            return image_path, False
 
     def _upload_local_image(self, image_path: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -267,7 +431,7 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
             "query_input": image_input
         }
 
-        logger.info(f"[SEARCH STARTED] Query Input: '{image_input}' using {provider_name}")
+        logger.info(f"[OPEN-WEB SEARCH] Query Input: '{image_input}' using {provider_name}")
 
         if not self.api_key:
             err_msg = "SERPAPI_API_KEY is not set. Please set the SERPAPI_API_KEY environment variable or pass api_key."
@@ -301,7 +465,8 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
                     log_info=log_info
                 )
 
-            image_id, upload_err = self._upload_local_image(image_input)
+            upload_path, is_cropped = self._create_face_crop_if_possible(image_input)
+            image_id, upload_err = self._upload_local_image(upload_path)
             if not image_id:
                 return SearchResponse(
                     success=False,
@@ -311,8 +476,9 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
                     log_info=log_info
                 )
             params["image_id"] = image_id
-            log_info["search_type"] = "image_id_upload"
+            log_info["search_type"] = "face_crop_upload" if is_cropped else "image_id_upload"
             log_info["image_id"] = image_id
+            log_info["is_face_crop"] = is_cropped
 
         try:
             resp = requests.get(self.SEARCH_ENDPOINT, params=params, timeout=30)
@@ -363,7 +529,7 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
 
             log_info["total_visual_matches"] = len(visual_matches)
             log_info["total_exact_matches"] = len(exact_matches)
-            logger.info(f"[CANDIDATES FOUND] Total candidates retrieved: {len(candidates)}")
+            logger.info(f"[CANDIDATES FOUND] Total open-web candidates retrieved: {len(candidates)}")
 
             return SearchResponse(
                 success=True,
@@ -494,7 +660,7 @@ class CandidateVerificationService:
 class CandidateFaceVerifier:
     """
     Genuine Face Verification Engine for Search Candidates.
-    Downloads candidate images, detects faces via InsightFace, and verifies face embeddings
+    Downloads/reads candidate images, detects faces via InsightFace, and verifies face embeddings
     against the query face embedding using cosine similarity.
     """
 
@@ -524,16 +690,24 @@ class CandidateFaceVerifier:
 
     def download_candidate_image(self, image_url: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
         """
-        Downloads a candidate image from a URL safely using requests and OpenCV.
+        Downloads or reads a candidate image safely using OpenCV or requests.
+        Supports both local file paths and remote HTTP URLs.
         
         Args:
-            image_url: Public image URL.
+            image_url: Public image URL or local file path.
             
         Returns:
             Tuple of (OpenCV BGR image numpy array or None, error message string or None).
         """
         if not image_url:
             return None, "No image URL provided."
+
+        # Check if candidate image URL is a local file path
+        if os.path.isfile(image_url):
+            img = cv2.imread(image_url)
+            if img is None:
+                return None, f"Failed to load local candidate image file '{image_url}'"
+            return img, None
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -581,10 +755,14 @@ class CandidateFaceVerifier:
         Returns:
             CandidateVerificationResult object.
         """
-        logger.info(f"[VERIFYING CANDIDATE] '{candidate.title}' | URL: {candidate.url}")
+        title_clean = candidate.title.encode('ascii', errors='ignore').decode('ascii') if candidate.title else ""
+        logger.info(f"[VERIFYING CANDIDATE] '{title_clean}' | URL: {candidate.url}")
 
-        image_url = candidate.original_image_url or candidate.thumbnail_url
-        if not image_url:
+        primary_url = candidate.original_image_url
+        fallback_url = candidate.thumbnail_url
+        target_url = primary_url or fallback_url
+
+        if not target_url:
             reason = "No candidate image URL available for visual face verification."
             logger.info(f"[REJECTED] {reason}")
             return CandidateVerificationResult(
@@ -597,7 +775,21 @@ class CandidateFaceVerifier:
                 raw_candidate=candidate
             )
 
-        img, err = self.download_candidate_image(image_url)
+        img, err = self.download_candidate_image(target_url)
+        used_url = target_url
+
+        # If primary image download failed and cached thumbnail fallback is available, try fallback
+        if img is None and primary_url and fallback_url and primary_url != fallback_url:
+            logger.info(f"[IMAGE FALLBACK] Primary candidate image download failed ({err}). Trying cached thumbnail URL...")
+            img, fallback_err = self.download_candidate_image(fallback_url)
+            if img is not None:
+                used_url = fallback_url
+                err = None
+            else:
+                err = f"Primary failed: {err} | Fallback failed: {fallback_err}"
+
+        image_url = used_url
+
         if img is None:
             reason = f"Candidate image download failed: {err}"
             logger.info(f"[REJECTED] {reason}")
@@ -605,7 +797,7 @@ class CandidateFaceVerifier:
                 candidate_url=candidate.url,
                 candidate_title=candidate.title,
                 source_domain=candidate.source_domain,
-                candidate_image_url=image_url,
+                candidate_image_url=used_url,
                 verification_status="REJECTED_DOWNLOAD_ERROR",
                 rejection_reason=reason,
                 raw_candidate=candidate
@@ -698,7 +890,6 @@ class CandidateFaceVerifier:
         else:
             query_embedding = query_image_or_embedding
 
-        # Rank candidates before verification
         ranked_candidates = CandidateVerificationService.rank_candidates(candidates)
         results: List[CandidateVerificationResult] = []
 
