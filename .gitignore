@@ -52,3 +52,9 @@ Thumbs.db
 # Generated face crop cache
 .face_crops/
 **/.face_crops/
+
+# Frontend / Node.js
+node_modules/
+**/node_modules/
+frontend/dist/
+frontend/.vite/
