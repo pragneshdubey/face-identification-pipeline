@@ -6,11 +6,14 @@ and candidate verification service for identifying face image matches.
 """
 
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 import io
 import json
 import logging
 import os
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple, Set, Union
 from urllib.parse import urlparse
 import cv2
@@ -20,6 +23,8 @@ import requests
 from app.face_engine import FaceIdentificationEngine, compute_cosine_similarity
 
 logger = logging.getLogger(__name__)
+
+_EXTRACT_FACES_LOCK = threading.Lock()
 
 # Standard social media & public profile domains for filtering
 SOCIAL_MEDIA_DOMAINS: Set[str] = {
@@ -385,6 +390,7 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
         Returns:
             Tuple of (image_id string or None, error message or None).
         """
+        t_up_start = time.time()
         try:
             img_bytes, mime_type = optimize_image_for_upload(image_path)
         except Exception as e:
@@ -401,6 +407,8 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
 
         try:
             resp = requests.post(self.UPLOAD_ENDPOINT, params=params, files=files, timeout=30)
+            t_up_end = time.time()
+            print(f"[Performance] Lens upload: {t_up_end - t_up_start:.4f}s")
             if resp.status_code != 200:
                 return None, f"SerpApi image upload failed (HTTP {resp.status_code}): {resp.text}"
 
@@ -412,6 +420,7 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
             logger.info(f"[SerpApi] Image upload successful. Received image_id: '{image_id}'")
             return image_id, None
         except Exception as e:
+            print(f"[Performance] Lens upload failed: {time.time() - t_up_start:.4f}s")
             return None, f"Exception during SerpApi image upload: {str(e)}"
 
     def search_by_image(self, image_input: str) -> SearchResponse:
@@ -481,7 +490,10 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
             log_info["is_face_crop"] = is_cropped
 
         try:
+            t_lens_start = time.time()
             resp = requests.get(self.SEARCH_ENDPOINT, params=params, timeout=30)
+            t_lens_end = time.time()
+            print(f"[Performance] Lens search: {t_lens_end - t_lens_start:.4f}s")
             if resp.status_code != 200:
                 err_msg = f"SerpApi Google Lens query failed (HTTP {resp.status_code}): {resp.text}"
                 logger.error(f"[SerpApi] {err_msg}")
@@ -503,6 +515,7 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
                     log_info=log_info
                 )
 
+            t_prep_start = time.time()
             candidates: List[SearchResultCandidate] = []
             visual_matches = data.get("visual_matches", [])
             exact_matches = data.get("exact_matches", [])
@@ -526,6 +539,10 @@ class SerpApiGoogleLensProvider(BaseReverseImageSearchProvider):
                         is_social_media=is_social,
                         raw_metadata=match
                     ))
+
+            candidates = CandidateVerificationService.deduplicate_candidates(candidates)
+            t_prep_end = time.time()
+            print(f"[Performance] Candidate preparation: {t_prep_end - t_prep_start:.4f}s")
 
             log_info["total_visual_matches"] = len(visual_matches)
             log_info["total_exact_matches"] = len(exact_matches)
@@ -621,6 +638,21 @@ class CandidateVerificationService:
     """
 
     @staticmethod
+    def deduplicate_candidates(candidates: List[SearchResultCandidate]) -> List[SearchResultCandidate]:
+        """
+        Deduplicates candidate results based on URL and image URL while preserving order.
+        """
+        seen = set()
+        deduped = []
+        for c in candidates:
+            img_url = c.original_image_url or c.thumbnail_url or ""
+            key = (c.url, img_url)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(c)
+        return deduped
+
+    @staticmethod
     def filter_social_media_candidates(candidates: List[SearchResultCandidate]) -> List[SearchResultCandidate]:
         """
         Filters candidates to return only those originating from social media platforms.
@@ -637,6 +669,7 @@ class CandidateVerificationService:
     def rank_candidates(candidates: List[SearchResultCandidate]) -> List[SearchResultCandidate]:
         """
         Ranks candidates based on domain authority, metadata completeness, and social media priority.
+        Deduplicates candidates first.
         
         Args:
             candidates: List of SearchResultCandidate instances.
@@ -644,7 +677,8 @@ class CandidateVerificationService:
         Returns:
             Ranked list of candidates sorted by calculated relevance score descending.
         """
-        for c in candidates:
+        deduped = CandidateVerificationService.deduplicate_candidates(candidates)
+        for c in deduped:
             score = 0.5  # Base score
             if c.is_social_media:
                 score += 0.3
@@ -654,7 +688,7 @@ class CandidateVerificationService:
                 score += 0.1
             c.relevance_score = round(min(1.0, score), 2)
 
-        return sorted(candidates, key=lambda x: x.relevance_score, reverse=True)
+        return sorted(deduped, key=lambda x: x.relevance_score, reverse=True)
 
 
 class CandidateFaceVerifier:
@@ -668,8 +702,8 @@ class CandidateFaceVerifier:
         self,
         face_engine: Optional[FaceIdentificationEngine] = None,
         face_threshold: float = 0.5,
-        download_timeout: float = 10.0,
-        max_image_bytes: int = 10 * 1024 * 1024,
+        download_timeout: Union[float, Tuple[float, float]] = (2.0, 3.0),
+        max_image_bytes: int = 5 * 1024 * 1024,
         stop_on_first_match: bool = True
     ):
         """
@@ -678,8 +712,8 @@ class CandidateFaceVerifier:
         Args:
             face_engine: FaceIdentificationEngine instance (lazy-loaded if None).
             face_threshold: Minimum cosine similarity score for a face match (default: 0.5).
-            download_timeout: Timeout in seconds for downloading candidate images (default: 10.0s).
-            max_image_bytes: Max size in bytes for candidate image downloads (default: 10 MB).
+            download_timeout: Connect & read timeout tuple in seconds for candidate downloads (default: (2.0, 3.0)).
+            max_image_bytes: Max size in bytes for candidate image downloads (default: 5 MB).
             stop_on_first_match: Whether to stop verification after finding first verified match.
         """
         self.face_engine = face_engine or FaceIdentificationEngine(threshold=face_threshold)
@@ -688,13 +722,33 @@ class CandidateFaceVerifier:
         self.max_image_bytes = max_image_bytes
         self.stop_on_first_match = stop_on_first_match
 
-    def download_candidate_image(self, image_url: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    @staticmethod
+    def _resize_if_too_large(img: np.ndarray, max_dim: int = 1024) -> np.ndarray:
         """
-        Downloads or reads a candidate image safely using OpenCV or requests.
+        Resizes candidate image if maximum dimension exceeds max_dim for faster CPU face detection.
+        """
+        if img is None:
+            return img
+        h, w = img.shape[:2]
+        if max(h, w) > max_dim:
+            scale = max_dim / float(max(h, w))
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        return img
+
+    def download_candidate_image(
+        self,
+        image_url: str,
+        cache: Optional[Dict[str, Tuple[Optional[np.ndarray], Optional[str]]]] = None
+    ) -> Tuple[Optional[np.ndarray], Optional[str]]:
+        """
+        Downloads or reads a candidate image safely using OpenCV or requests with strict timeouts and caching.
         Supports both local file paths and remote HTTP URLs.
         
         Args:
             image_url: Public image URL or local file path.
+            cache: Optional request-level image cache dictionary.
             
         Returns:
             Tuple of (OpenCV BGR image numpy array or None, error message string or None).
@@ -702,12 +756,20 @@ class CandidateFaceVerifier:
         if not image_url:
             return None, "No image URL provided."
 
+        if cache is not None and image_url in cache:
+            return cache[image_url]
+
         # Check if candidate image URL is a local file path
         if os.path.isfile(image_url):
             img = cv2.imread(image_url)
             if img is None:
-                return None, f"Failed to load local candidate image file '{image_url}'"
-            return img, None
+                res = (None, f"Failed to load local candidate image file '{image_url}'")
+            else:
+                img = self._resize_if_too_large(img)
+                res = (img, None)
+            if cache is not None:
+                cache[image_url] = res
+            return res
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -716,34 +778,55 @@ class CandidateFaceVerifier:
         try:
             resp = requests.get(image_url, headers=headers, timeout=self.download_timeout, stream=True)
             if resp.status_code != 200:
-                return None, f"HTTP Error {resp.status_code} while downloading image from '{image_url}'"
+                res = (None, f"HTTP Error {resp.status_code} while downloading image from '{image_url}'")
+                if cache is not None:
+                    cache[image_url] = res
+                return res
 
             content_length = resp.headers.get("Content-Length")
             if content_length and int(content_length) > self.max_image_bytes:
-                return None, f"Image size ({content_length} bytes) exceeds limit of {self.max_image_bytes} bytes."
+                res = (None, f"Image size ({content_length} bytes) exceeds limit of {self.max_image_bytes} bytes.")
+                if cache is not None:
+                    cache[image_url] = res
+                return res
 
             image_bytes = bytearray()
             for chunk in resp.iter_content(chunk_size=65536):
                 image_bytes.extend(chunk)
                 if len(image_bytes) > self.max_image_bytes:
-                    return None, f"Image stream size exceeded maximum limit of {self.max_image_bytes} bytes."
+                    res = (None, f"Image stream size exceeded maximum limit of {self.max_image_bytes} bytes.")
+                    if cache is not None:
+                        cache[image_url] = res
+                    return res
 
             np_arr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
             if img is None:
-                return None, f"OpenCV failed to decode image downloaded from '{image_url}'."
+                res = (None, f"OpenCV failed to decode image downloaded from '{image_url}'.")
+            else:
+                img = self._resize_if_too_large(img)
+                res = (img, None)
 
-            return img, None
+            if cache is not None:
+                cache[image_url] = res
+            return res
         except requests.Timeout:
-            return None, f"Download timed out ({self.download_timeout}s) for URL '{image_url}'."
+            res = (None, f"Download timed out ({self.download_timeout}s) for URL '{image_url}'.")
+            if cache is not None:
+                cache[image_url] = res
+            return res
         except Exception as e:
-            return None, f"Failed to download candidate image from '{image_url}': {str(e)}"
+            res = (None, f"Failed to download candidate image from '{image_url}': {str(e)}")
+            if cache is not None:
+                cache[image_url] = res
+            return res
 
     def verify_candidate(
         self,
         query_embedding: np.ndarray,
-        candidate: SearchResultCandidate
+        candidate: SearchResultCandidate,
+        cache: Optional[Dict[str, Tuple[Optional[np.ndarray], Optional[str]]]] = None
     ) -> CandidateVerificationResult:
         """
         Verifies a single search result candidate against the query face embedding.
@@ -751,6 +834,7 @@ class CandidateFaceVerifier:
         Args:
             query_embedding: L2 normalized face embedding vector of the original query image.
             candidate: SearchResultCandidate object.
+            cache: Optional request-level image cache dictionary.
             
         Returns:
             CandidateVerificationResult object.
@@ -775,13 +859,13 @@ class CandidateFaceVerifier:
                 raw_candidate=candidate
             )
 
-        img, err = self.download_candidate_image(target_url)
+        img, err = self.download_candidate_image(target_url, cache=cache)
         used_url = target_url
 
         # If primary image download failed and cached thumbnail fallback is available, try fallback
         if img is None and primary_url and fallback_url and primary_url != fallback_url:
             logger.info(f"[IMAGE FALLBACK] Primary candidate image download failed ({err}). Trying cached thumbnail URL...")
-            img, fallback_err = self.download_candidate_image(fallback_url)
+            img, fallback_err = self.download_candidate_image(fallback_url, cache=cache)
             if img is not None:
                 used_url = fallback_url
                 err = None
@@ -803,8 +887,9 @@ class CandidateFaceVerifier:
                 raw_candidate=candidate
             )
 
-        # Detect faces in candidate image
-        faces = self.face_engine.extract_faces(img)
+        # Detect faces in candidate image (guarded by lock for thread-safe ONNX inference)
+        with _EXTRACT_FACES_LOCK:
+            faces = self.face_engine.extract_faces(img)
         num_faces = len(faces)
         logger.info(f"[FACE DETECTED] Found {num_faces} face(s) in candidate image.")
 
@@ -865,24 +950,28 @@ class CandidateFaceVerifier:
     def verify_search_candidates(
         self,
         query_image_or_embedding: Union[str, np.ndarray],
-        candidates: List[SearchResultCandidate]
+        candidates: List[SearchResultCandidate],
+        max_workers: int = 4
     ) -> List[CandidateVerificationResult]:
         """
-        Verifies a list of search result candidates in ranked order.
+        Verifies a list of search result candidates in ranked order using ThreadPoolExecutor bounded concurrency and early exit.
         
         Args:
             query_image_or_embedding: Query image file path or raw 1D/2D embedding array.
             candidates: List of SearchResultCandidate instances.
+            max_workers: Bounded concurrency worker count (default: 4).
             
         Returns:
             List of CandidateVerificationResult instances for tested candidates.
         """
+        t_verif_start = time.time()
         if isinstance(query_image_or_embedding, str):
             img, err = FaceIdentificationEngine.load_image(query_image_or_embedding)
             if img is None:
                 logger.error(f"[VERIFICATION ERROR] Failed to load query image: {err}")
                 return []
-            faces = self.face_engine.extract_faces(img)
+            with _EXTRACT_FACES_LOCK:
+                faces = self.face_engine.extract_faces(img)
             if not faces:
                 logger.error(f"[VERIFICATION ERROR] No faces detected in query image '{query_image_or_embedding}'")
                 return []
@@ -892,13 +981,65 @@ class CandidateFaceVerifier:
 
         ranked_candidates = CandidateVerificationService.rank_candidates(candidates)
         results: List[CandidateVerificationResult] = []
+        total_candidates = len(ranked_candidates)
 
-        for candidate in ranked_candidates:
-            res = self.verify_candidate(query_embedding, candidate)
-            results.append(res)
+        if total_candidates == 0:
+            print("[Performance] Candidate verification:")
+            print("0 candidates")
+            print("successful downloads: 0")
+            print("failed downloads: 0")
+            print("faces detected: 0")
+            print(f"total time: {time.time() - t_verif_start:.2f}s")
+            return results
 
-            if res.is_verified_match and self.stop_on_first_match:
-                logger.info("[PIPELINE COMPLETE] Verified match found. Stopping further candidate inspection.")
-                break
+        image_cache: Dict[str, Tuple[Optional[np.ndarray], Optional[str]]] = {}
+        successful_downloads = 0
+        failed_downloads = 0
+        faces_detected_count = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(self.verify_candidate, query_embedding, cand, image_cache)
+                for cand in ranked_candidates
+            ]
+
+            for idx, future in enumerate(futures):
+                try:
+                    res = future.result()
+                    results.append(res)
+
+                    if res.verification_status in {"VERIFIED_MATCH", "REJECTED_LOW_SIMILARITY", "REJECTED_NO_FACE"}:
+                        successful_downloads += 1
+                    elif res.verification_status in {"REJECTED_DOWNLOAD_ERROR", "REJECTED_NO_IMAGE_URL"}:
+                        failed_downloads += 1
+
+                    if res.best_face_bbox is not None or res.verification_status not in {"REJECTED_NO_FACE", "REJECTED_DOWNLOAD_ERROR", "REJECTED_NO_IMAGE_URL"}:
+                        if res.verification_status in {"VERIFIED_MATCH", "REJECTED_LOW_SIMILARITY"}:
+                            faces_detected_count += 1
+
+                    if res.is_verified_match and self.stop_on_first_match:
+                        logger.info(f"[PIPELINE COMPLETE] Verified match found ('{res.candidate_title}', score: {res.face_similarity_score:.4f}). Stopping remaining candidates.")
+                        for remaining_future in futures[idx + 1:]:
+                            remaining_future.cancel()
+                        break
+                except Exception as e:
+                    cand = ranked_candidates[idx]
+                    failed_downloads += 1
+                    results.append(CandidateVerificationResult(
+                        candidate_url=cand.url,
+                        candidate_title=cand.title,
+                        source_domain=cand.source_domain,
+                        verification_status="REJECTED_DOWNLOAD_ERROR",
+                        rejection_reason=f"Exception: {e}",
+                        raw_candidate=cand
+                    ))
+
+        t_total = time.time() - t_verif_start
+        print("[Performance] Candidate verification:")
+        print(f"{total_candidates} candidates")
+        print(f"successful downloads: {successful_downloads}")
+        print(f"failed downloads: {failed_downloads}")
+        print(f"faces detected: {faces_detected_count}")
+        print(f"total time: {t_total:.2f}s")
 
         return results

@@ -3,75 +3,111 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Page = 'verification' | 'history' | 'system'
-type PipelineState = 'idle' | 'loading' | 'success' | 'failure'
+type PipelineState = 'idle' | 'loading' | 'success' | 'failure' | 'search_error' | 'error'
 
 interface LogEntry {
   time: string
   message: string
-  status: 'info' | 'success' | 'warning'
+  status: 'info' | 'success' | 'warning' | 'error'
 }
 
 interface PipelineStep {
   id: number
   label: string
   sublabel: string
-  state: 'pending' | 'active' | 'done'
+  state: 'pending' | 'active' | 'done' | 'failed' | 'skipped'
+}
+
+interface ApiResultData {
+  success: boolean
+  face_detected: boolean
+  detection_score?: number
+  bbox?: number[]
+  embedding_generated?: boolean
+  search_status?: 'success' | 'failed'
+  error_stage?: string
+  filename?: string
+  candidates_evaluated: number
+  match_found: boolean
+  highest_similarity?: number
+  threshold: number
+  error?: string
+  candidate?: {
+    title: string
+    source_url: string
+    domain: string
+    candidate_image_url?: string
+    similarity: number
+  } | null
+  blockchain?: {
+    fingerprint: string
+    record_id: string
+    block_hash?: string
+    previous_hash?: string
+    chain_integrity: string
+    reverification: string
+    confidence: number
+  } | null
+  logs?: LogEntry[]
+}
+
+interface HistoryRecord {
+  id: string
+  date: string
+  input: string
+  candidates: number
+  similarity: string
+  source: string
+  blockchain: string
+  status: 'success' | 'failure'
+}
+
+interface SystemHealth {
+  status: string
+  system: string
+  face_engine: string
+  embedding_dimensions: number
+  default_threshold: number
+  serpapi_configured: boolean
+  blockchain: string
+  timestamp: string
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SUCCESS_LOG: LogEntry[] = [
-  { time: '14:32:01', message: 'Loading input image...', status: 'info' },
-  { time: '14:32:02', message: 'Face detected — confidence 0.8149', status: 'success' },
-  { time: '14:32:02', message: 'Generating 512D face embedding...', status: 'info' },
-  { time: '14:32:03', message: 'Uploading face crop to Google Lens...', status: 'info' },
-  { time: '14:32:05', message: '59 candidates retrieved from web search', status: 'success' },
-  { time: '14:32:07', message: 'Candidate verification started...', status: 'info' },
-  { time: '14:32:09', message: 'Best candidate similarity score: 0.9709', status: 'success' },
-  { time: '14:32:09', message: 'Verification threshold: 0.5000', status: 'info' },
-  { time: '14:32:09', message: 'Candidate VERIFIED — exceeds threshold', status: 'success' },
-  { time: '14:32:10', message: 'SHA-256 fingerprint generated', status: 'success' },
-  { time: '14:32:10', message: 'Blockchain record created', status: 'success' },
-  { time: '14:32:10', message: 'Chain integrity check PASSED', status: 'success' },
-  { time: '14:32:10', message: 'On-chain re-verification VERIFIED', status: 'success' },
-]
-
-const FAILURE_LOG: LogEntry[] = [
-  { time: '14:35:01', message: 'Loading input image...', status: 'info' },
-  { time: '14:35:02', message: 'Face detected — confidence 0.7432', status: 'success' },
-  { time: '14:35:02', message: 'Generating 512D face embedding...', status: 'info' },
-  { time: '14:35:03', message: 'Uploading face crop to Google Lens...', status: 'info' },
-  { time: '14:35:05', message: '59 candidates retrieved from web search', status: 'success' },
-  { time: '14:35:07', message: 'Candidate verification started...', status: 'info' },
-  { time: '14:35:09', message: 'Best candidate similarity score: 0.3699', status: 'warning' },
-  { time: '14:35:09', message: 'Verification threshold: 0.5000', status: 'info' },
-  { time: '14:35:09', message: 'No candidate exceeded threshold — no match found', status: 'warning' },
-  { time: '14:35:10', message: 'Blockchain record not created — verification not passed', status: 'warning' },
-]
-
 const PIPELINE_STEPS_INITIAL: PipelineStep[] = [
-  { id: 1, label: 'Face', sublabel: 'Detection', state: 'pending' },
-  { id: 2, label: 'Search', sublabel: 'Web Candidates', state: 'pending' },
-  { id: 3, label: 'Verify', sublabel: 'Face Similarity', state: 'pending' },
-  { id: 4, label: 'Blockchain', sublabel: 'Registration', state: 'pending' },
-  { id: 5, label: 'Re-Verify', sublabel: 'On-Chain', state: 'pending' },
+  { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'pending' },
+  { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'pending' },
+  { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'pending' },
+  { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'pending' },
+  { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'pending' },
 ]
 
-const HISTORY_ROWS = [
-  { date: 'Sep 5, 2026', input: 'einstein_demo.jpg', candidates: 59, similarity: '0.9709', source: 'Facebook', blockchain: 'Verified', status: 'success' as const },
-  { date: 'Sep 4, 2026', input: 'sample_face_02.jpg', candidates: 42, similarity: '0.3699', source: '—', blockchain: 'None', status: 'failure' as const },
-  { date: 'Sep 4, 2026', input: 'portrait_test.png', candidates: 71, similarity: '0.8812', source: 'Wikipedia', blockchain: 'Verified', status: 'success' as const },
-  { date: 'Sep 3, 2026', input: 'headshot_01.jpg', candidates: 18, similarity: '0.4102', source: '—', blockchain: 'None', status: 'failure' as const },
-]
-
-// ─── Utility ──────────────────────────────────────────────────────────────────
+// ─── Utility Functions ────────────────────────────────────────────────────────
 
 function cn(...classes: (string | false | undefined | null)[]) {
   return classes.filter(Boolean).join(' ')
 }
 
-function now() {
+function formatNow() {
   return new Date().toLocaleTimeString('en-GB', { hour12: false })
+}
+
+function truncateHash(hash?: string, start = 10, end = 8): string {
+  if (!hash || hash === '--') return '--'
+  if (hash.length <= start + end + 3) return hash
+  return `${hash.slice(0, start)}...${hash.slice(-end)}`
+}
+
+function truncateFilename(name: string, maxLen = 30): string {
+  if (!name) return ''
+  if (name.length <= maxLen) return name
+  const lastDot = name.lastIndexOf('.')
+  const ext = lastDot !== -1 ? name.slice(lastDot) : ''
+  const base = lastDot !== -1 ? name.slice(0, lastDot) : name
+  const keepLen = maxLen - ext.length - 3
+  if (keepLen <= 0) return name.slice(0, maxLen - 3) + '...'
+  return `${base.slice(0, keepLen)}...${ext}`
 }
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -91,7 +127,7 @@ function IconFaceVerify() {
 
 function IconUpload() {
   return (
-    <svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="36" height="36" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M20 26V14M20 14l-5 5M20 14l5 5" stroke="#9CA3AF" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M12 30h16M8 22c0 4.418 3.582 8 8 8h8c4.418 0 8-3.582 8-8" stroke="#9CA3AF" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
@@ -107,19 +143,50 @@ function IconShield() {
   )
 }
 
-function IconCopy({ onClick }: { onClick: () => void }) {
+function IconCopy({ textToCopy, label }: { textToCopy: string; label?: string }) {
   const [copied, setCopied] = useState(false)
-  const handleClick = () => {
-    onClick()
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+
+  const handleClick = async () => {
+    if (!textToCopy || textToCopy === '--') return
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(textToCopy)
+      } else {
+        const textArea = document.createElement('textarea')
+        textArea.value = textToCopy
+        textArea.style.position = 'fixed'
+        textArea.style.left = '-999999px'
+        textArea.style.top = '-999999px'
+        document.body.appendChild(textArea)
+        textArea.focus()
+        textArea.select()
+        document.execCommand('copy')
+        textArea.remove()
+      }
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (err) {
+      console.error('Failed to copy text:', err)
+    }
   }
+
   return (
-    <button onClick={handleClick} className="ml-2 text-gray-400 hover:text-gray-600 transition-colors" title="Copy to clipboard">
+    <button
+      onClick={handleClick}
+      className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors flex-shrink-0"
+      title={`Copy full ${label || 'value'} (64-character SHA-256) to clipboard`}
+    >
       {copied ? (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 7l3.5 3.5 6.5-7" stroke="#059669" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        <span className="text-emerald-600 font-semibold flex items-center gap-1">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M2 7l3.5 3.5 6.5-7" stroke="#059669" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          Copied
+        </span>
       ) : (
-        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" /><path d="M4.5 9.5H3a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 013 1.5h5A1.5 1.5 0 019.5 3v1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+        <span className="flex items-center gap-1">
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><rect x="4.5" y="4.5" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" /><path d="M4.5 9.5H3a1.5 1.5 0 01-1.5-1.5V3A1.5 1.5 0 013 1.5h5A1.5 1.5 0 019.5 3v1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" /></svg>
+          Copy
+        </span>
       )}
     </button>
   )
@@ -127,14 +194,14 @@ function IconCopy({ onClick }: { onClick: () => void }) {
 
 function IconSpinner() {
   return (
-    <svg className="animate-spin-slow" width="20" height="20" viewBox="0 0 20 20" fill="none">
+    <svg className="animate-spin" width="16" height="16" viewBox="0 0 20 20" fill="none">
       <circle cx="10" cy="10" r="8" stroke="#E5E7EB" strokeWidth="2.5" />
-      <path d="M10 2a8 8 0 018 8" stroke="#111827" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M10 2a8 8 0 018 8" stroke="#2563EB" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   )
 }
 
-// ─── Shared components ────────────────────────────────────────────────────────
+// ─── Shared UI Primitives ─────────────────────────────────────────────────────
 
 function Button({ children, variant = 'primary', onClick, className = '', disabled = false }: {
   children: React.ReactNode
@@ -143,11 +210,11 @@ function Button({ children, variant = 'primary', onClick, className = '', disabl
   className?: string
   disabled?: boolean
 }) {
-  const base = 'inline-flex items-center justify-center gap-2 text-sm font-medium rounded-[10px] transition-all duration-150 cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed'
+  const base = 'inline-flex items-center justify-center gap-2 text-xs font-semibold rounded-lg transition-all duration-150 cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed'
   const variants = {
-    primary: 'bg-[#111827] text-white px-5 py-2.5 hover:bg-[#1f2937] active:bg-[#0f172a] shadow-sm',
-    outline: 'border border-[#E5E7EB] text-[#111827] px-5 py-2.5 hover:bg-gray-50 active:bg-gray-100',
-    ghost: 'text-[#667085] px-3 py-2 hover:bg-gray-100 hover:text-[#111827]',
+    primary: 'bg-[#111827] text-white px-4 py-2 hover:bg-[#1f2937] active:bg-[#0f172a] shadow-sm',
+    outline: 'border border-[#E5E7EB] text-[#111827] px-4 py-2 hover:bg-gray-50 active:bg-gray-100',
+    ghost: 'text-[#667085] px-3 py-1.5 hover:bg-gray-100 hover:text-[#111827]',
   }
   return (
     <button className={cn(base, variants[variant], className)} onClick={onClick} disabled={disabled}>
@@ -172,7 +239,7 @@ function StatusPill({ status, label }: { status: 'success' | 'info' | 'warning' 
     neutral: 'bg-gray-400',
   }
   return (
-    <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border', styles[status])}>
+    <span className={cn('inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full border', styles[status])}>
       <span className={cn('w-1.5 h-1.5 rounded-full', dots[status])} />
       {label}
     </span>
@@ -187,45 +254,34 @@ function Card({ children, className = '' }: { children: React.ReactNode; classNa
   )
 }
 
-function HashField({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="space-y-1.5">
-      <p className="text-xs font-medium text-[#667085] uppercase tracking-wider">{label}</p>
-      <div className="flex items-center bg-[#F7F8FA] rounded-lg px-3 py-2.5 border border-[#E5E7EB]">
-        <code className="font-mono text-xs text-[#111827] flex-1 break-all leading-relaxed">
-          {value}
-        </code>
-        <IconCopy onClick={() => navigator.clipboard?.writeText(value)} />
-      </div>
-    </div>
-  )
-}
-
 function MetricCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
-    <Card className="p-4">
-      <p className="text-xs font-medium text-[#98A2B3] uppercase tracking-wider mb-1">{label}</p>
-      <p className="text-2xl font-semibold text-[#111827] font-mono leading-none">{value}</p>
-      {sub && <p className="text-xs text-[#98A2B3] mt-1">{sub}</p>}
+    <Card className="p-3.5 flex flex-col justify-between">
+      <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-1">{label}</p>
+      <div className="flex items-baseline justify-between">
+        <p className="text-xl font-bold text-[#111827] font-mono leading-none">{value}</p>
+        {sub && <span className="text-[10px] text-[#98A2B3] font-medium">{sub}</span>}
+      </div>
     </Card>
   )
 }
 
 // ─── Navbar ───────────────────────────────────────────────────────────────────
 
-function Navbar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+function Navbar({ page, setPage, isOnline }: { page: Page; setPage: (p: Page) => void; isOnline: boolean | null }) {
   const navItems: { id: Page; label: string }[] = [
     { id: 'verification', label: 'Verification' },
     { id: 'history', label: 'History' },
     { id: 'system', label: 'System' },
   ]
+
   return (
     <header className="bg-white border-b border-[#E5E7EB] sticky top-0 z-50">
-      <div className="max-w-[1320px] mx-auto px-6 h-14 flex items-center gap-8">
+      <div className="max-w-4xl mx-auto px-4 h-14 flex items-center justify-between gap-6">
         <div className="flex items-center gap-3 flex-shrink-0">
           <IconFaceVerify />
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-[#111827] text-[15px] tracking-tight">FaceVerify</span>
+            <span className="font-bold text-[#111827] text-base tracking-tight">FaceVerify</span>
             <span className="text-[10px] font-medium text-[#667085] bg-gray-100 border border-[#E5E7EB] px-2 py-0.5 rounded-full">
               HH Goa 2026 · Task 3
             </span>
@@ -238,7 +294,7 @@ function Navbar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
               key={item.id}
               onClick={() => setPage(item.id)}
               className={cn(
-                'px-3.5 py-1.5 text-sm rounded-lg transition-all duration-150 font-medium',
+                'px-3 py-1.5 text-xs rounded-lg transition-all duration-150 font-semibold',
                 page === item.id
                   ? 'bg-[#111827] text-white'
                   : 'text-[#667085] hover:text-[#111827] hover:bg-gray-50'
@@ -249,13 +305,13 @@ function Navbar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-3">
-          <div className="flex items-center gap-2 text-xs text-[#667085]">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse-dot" />
-            System Ready
-          </div>
-          <div className="w-8 h-8 rounded-full bg-[#111827] flex items-center justify-center text-white text-xs font-medium">
-            FV
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-[#667085]">
+            <span className={cn(
+              'w-2 h-2 rounded-full',
+              isOnline === true ? 'bg-emerald-500 animate-pulse' : isOnline === false ? 'bg-red-500' : 'bg-gray-400'
+            )} />
+            <span className="hidden sm:inline">{isOnline === true ? 'System Ready' : isOnline === false ? 'Backend Offline' : 'Checking...'}</span>
           </div>
         </div>
       </div>
@@ -263,66 +319,257 @@ function Navbar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
   )
 }
 
-// ─── Pipeline Stepper (horizontal) ───────────────────────────────────────────
+// ─── Region Adjuster Component ────────────────────────────────────────────────
 
-function PipelineStepper({ steps }: { steps: PipelineStep[] }) {
+function RegionAdjuster({
+  imageUrl,
+  initialBbox,
+  onConfirm,
+  onCancel,
+}: {
+  imageUrl: string
+  initialBbox: number[] | null
+  onConfirm: (box: number[]) => void
+  onCancel: () => void
+}) {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
+  const [box, setBox] = useState<{ x: number; y: number; w: number; h: number }>({ x: 20, y: 15, w: 60, h: 70 })
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const nw = e.currentTarget.naturalWidth
+    const nh = e.currentTarget.naturalHeight
+    setNaturalSize({ w: nw, h: nh })
+
+    if (initialBbox && initialBbox.length === 4 && nw > 0 && nh > 0) {
+      const [xmin, ymin, xmax, ymax] = initialBbox
+      const px = Math.max(0, Math.min(100, (xmin / nw) * 100))
+      const py = Math.max(0, Math.min(100, (ymin / nh) * 100))
+      const pw = Math.max(5, Math.min(100 - px, ((xmax - xmin) / nw) * 100))
+      const ph = Math.max(5, Math.min(100 - py, ((ymax - ymin) / nh) * 100))
+      setBox({ x: px, y: py, w: pw, h: ph })
+    }
+  }
+
+  const [dragState, setDragState] = useState<{
+    mode: 'move' | 'tl' | 'tr' | 'bl' | 'br'
+    startX: number
+    startY: number
+    initBox: { x: number; y: number; w: number; h: number }
+  } | null>(null)
+
+  const onPointerDown = (e: React.PointerEvent, mode: 'move' | 'tl' | 'tr' | 'bl' | 'br') => {
+    e.stopPropagation()
+    e.preventDefault()
+    try {
+      ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+    } catch {}
+    setDragState({
+      mode,
+      startX: e.clientX,
+      startY: e.clientY,
+      initBox: { ...box },
+    })
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!dragState || !imgRef.current) return
+    const rect = imgRef.current.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+
+    const dxPercent = ((e.clientX - dragState.startX) / rect.width) * 100
+    const dyPercent = ((e.clientY - dragState.startY) / rect.height) * 100
+    const init = dragState.initBox
+
+    if (dragState.mode === 'move') {
+      const newX = Math.max(0, Math.min(100 - init.w, init.x + dxPercent))
+      const newY = Math.max(0, Math.min(100 - init.h, init.y + dyPercent))
+      setBox({ ...init, x: newX, y: newY })
+    } else if (dragState.mode === 'br') {
+      const newW = Math.max(5, Math.min(100 - init.x, init.w + dxPercent))
+      const newH = Math.max(5, Math.min(100 - init.y, init.h + dyPercent))
+      setBox({ ...init, w: newW, h: newH })
+    } else if (dragState.mode === 'tl') {
+      const maxDx = init.x + init.w - 5
+      const clampedDx = Math.min(dxPercent, maxDx)
+      const newW = init.w - clampedDx
+      const newX = init.x + clampedDx
+
+      const maxDy = init.y + init.h - 5
+      const clampedDy = Math.min(dyPercent, maxDy)
+      const newH = init.h - clampedDy
+      const newY = init.y + clampedDy
+      setBox({ x: Math.max(0, newX), y: Math.max(0, newY), w: newW, h: newH })
+    } else if (dragState.mode === 'tr') {
+      const newW = Math.max(5, Math.min(100 - init.x, init.w + dxPercent))
+      const maxDy = init.y + init.h - 5
+      const clampedDy = Math.min(dyPercent, maxDy)
+      const newH = init.h - clampedDy
+      const newY = init.y + clampedDy
+      setBox({ x: init.x, y: Math.max(0, newY), w: newW, h: newH })
+    } else if (dragState.mode === 'bl') {
+      const maxDx = init.x + init.w - 5
+      const clampedDx = Math.min(dxPercent, maxDx)
+      const newW = init.w - clampedDx
+      const newX = init.x + clampedDx
+      const newH = Math.max(5, Math.min(100 - init.y, init.h + dyPercent))
+      setBox({ x: Math.max(0, newX), y: init.y, w: newW, h: newH })
+    }
+  }
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (dragState) {
+      try {
+        ;(e.target as HTMLElement).releasePointerCapture(e.pointerId)
+      } catch {}
+      setDragState(null)
+    }
+  }
+
+  const handleConfirm = () => {
+    if (!naturalSize) {
+      onCancel()
+      return
+    }
+    const xmin = Math.round((box.x / 100) * naturalSize.w)
+    const ymin = Math.round((box.y / 100) * naturalSize.h)
+    const xmax = Math.round(((box.x + box.w) / 100) * naturalSize.w)
+    const ymax = Math.round(((box.y + box.h) / 100) * naturalSize.h)
+    onConfirm([xmin, ymin, xmax, ymax])
+  }
+
   return (
-    <Card className="p-6">
-      <div className="flex items-center justify-between relative">
-        <div className="absolute left-0 right-0 top-[22px] h-px bg-[#E5E7EB] mx-[40px]" />
-        {steps.map((step, i) => (
-          <div key={step.id} className="flex flex-col items-center gap-2 relative z-10 flex-1">
-            <div className={cn(
-              'w-11 h-11 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-all duration-500',
-              step.state === 'done' && 'bg-[#059669] border-[#059669] text-white',
-              step.state === 'active' && 'bg-white border-[#2563EB] text-[#2563EB] shadow-md',
-              step.state === 'pending' && 'bg-white border-[#E5E7EB] text-[#98A2B3]',
-            )}>
-              {step.state === 'done' ? (
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M3 8l3.5 3.5 6.5-7" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              ) : (
-                <span className="font-mono text-xs">0{i + 1}</span>
-              )}
-            </div>
-            <div className="text-center">
-              <p className={cn('text-xs font-semibold', step.state === 'pending' ? 'text-[#98A2B3]' : 'text-[#111827]')}>
-                {step.label}
-              </p>
-              <p className="text-[10px] text-[#98A2B3]">{step.sublabel}</p>
-            </div>
-          </div>
-        ))}
+    <div className="bg-gray-900 text-white rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-xs font-bold text-white">Adjust Face Region</h3>
+          <p className="text-[11px] text-gray-400">Drag or resize the box around the face you want to verify.</p>
+        </div>
+        <button
+          onClick={onCancel}
+          className="text-gray-400 hover:text-white text-xs px-2.5 py-1 rounded bg-gray-800 hover:bg-gray-700 transition-colors"
+        >
+          Cancel
+        </button>
       </div>
-    </Card>
+
+      <div
+        className="relative mx-auto overflow-hidden bg-black/60 rounded-lg select-none touch-none flex items-center justify-center p-1 max-h-[360px]"
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+      >
+        <div className="relative inline-block max-h-[350px] max-w-full">
+          <img
+            ref={imgRef}
+            src={imageUrl}
+            alt="Target face for cropping"
+            onLoad={handleImageLoad}
+            className="max-h-[350px] w-auto max-w-full object-contain pointer-events-none block rounded"
+          />
+
+          <div
+            className="absolute border-2 border-emerald-400 bg-emerald-500/20 cursor-move flex items-center justify-center shadow-lg rounded"
+            style={{
+              left: `${box.x}%`,
+              top: `${box.y}%`,
+              width: `${box.w}%`,
+              height: `${box.h}%`,
+            }}
+            onPointerDown={(e) => onPointerDown(e, 'move')}
+          >
+            <span className="text-[10px] font-mono font-bold bg-emerald-600 text-white px-1.5 py-0.5 rounded shadow pointer-events-none">
+              Selected Region
+            </span>
+
+            <div
+              className="absolute -top-1.5 -left-1.5 w-3.5 h-3.5 bg-white border-2 border-emerald-600 rounded-full cursor-nwse-resize hover:scale-125 transition-transform"
+              onPointerDown={(e) => onPointerDown(e, 'tl')}
+            />
+            <div
+              className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-white border-2 border-emerald-600 rounded-full cursor-nesw-resize hover:scale-125 transition-transform"
+              onPointerDown={(e) => onPointerDown(e, 'tr')}
+            />
+            <div
+              className="absolute -bottom-1.5 -left-1.5 w-3.5 h-3.5 bg-white border-2 border-emerald-600 rounded-full cursor-nesw-resize hover:scale-125 transition-transform"
+              onPointerDown={(e) => onPointerDown(e, 'bl')}
+            />
+            <div
+              className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 bg-white border-2 border-emerald-600 rounded-full cursor-nwse-resize hover:scale-125 transition-transform"
+              onPointerDown={(e) => onPointerDown(e, 'br')}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-1">
+        <span className="text-[11px] text-gray-400 font-mono">
+          Box: ({box.x.toFixed(0)}%, {box.y.toFixed(0)}%) - {box.w.toFixed(0)}x{box.h.toFixed(0)}%
+        </span>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={onCancel} className="text-white border-gray-700 hover:bg-gray-800">
+            Cancel
+          </Button>
+          <Button onClick={handleConfirm} className="bg-emerald-600 hover:bg-emerald-500 text-white">
+            Use Selected Region
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 
-// ─── Face Input Card ──────────────────────────────────────────────────────────
+// ─── 1. Face Input Component ──────────────────────────────────────────────────
 
 function FaceInputCard({
   imageUrl,
+  imageFilename,
+  cropBox,
+  onCropBoxChange,
   onImageSelect,
   onClear,
   onRun,
   pipelineState,
+  apiResult
 }: {
   imageUrl: string | null
+  imageFilename: string
+  cropBox: number[] | null
+  onCropBoxChange: (box: number[] | null) => void
   onImageSelect: (url: string, file?: File) => void
   onClear: () => void
   onRun: () => void
   pipelineState: PipelineState
+  apiResult: ApiResultData | null
 }) {
   const [dragging, setDragging] = useState(false)
+  const [isAdjusting, setIsAdjusting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const thumbImgRef = useRef<HTMLImageElement>(null)
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
+
+  const handleThumbImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const nw = e.currentTarget.naturalWidth
+    const nh = e.currentTarget.naturalHeight
+    if (nw > 0 && nh > 0) {
+      setNaturalSize({ w: nw, h: nh })
+    }
+  }
+
+  useEffect(() => {
+    if (thumbImgRef.current && thumbImgRef.current.complete) {
+      const nw = thumbImgRef.current.naturalWidth
+      const nh = thumbImgRef.current.naturalHeight
+      if (nw > 0 && nh > 0) {
+        setNaturalSize({ w: nw, h: nh })
+      }
+    }
+  }, [imageUrl])
 
   const handleFile = (file: File) => {
-    if (!file.type.match(/image\/(jpeg|jpg|png)/)) return
+    if (!file.type.match(/image\/(jpeg|jpg|png|webp)/)) return
     const url = URL.createObjectURL(file)
     onImageSelect(url, file)
   }
-
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -340,21 +587,34 @@ function FaceInputCard({
   }
 
   const isRunning = pipelineState === 'loading'
+  const faceDetected = apiResult?.face_detected === true
+  const detConfidence = apiResult?.detection_score ? apiResult.detection_score.toFixed(4) : '--'
+  const embeddingGenerated = apiResult?.embedding_generated === true
+
+  // Bounding box to display on thumbnail: custom region if set, otherwise automatic InsightFace box
+  const activeBbox = cropBox || (faceDetected && apiResult?.bbox ? apiResult.bbox : null)
 
   return (
-    <Card className="p-6 flex flex-col gap-5">
-      <div>
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="font-mono text-xs text-[#98A2B3]">01</span>
-          <h2 className="text-[15px] font-semibold text-[#111827]">Face Input</h2>
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-sm font-bold text-[#111827]">Face Input</h2>
+          <p className="text-xs text-[#667085]">Upload an image containing a detectable face.</p>
         </div>
-        <p className="text-xs text-[#667085]">Upload an image containing a detectable face.</p>
+        {imageFilename && (
+          <span
+            className="text-xs font-mono text-[#667085] bg-gray-100 px-2.5 py-1 rounded-md border border-[#E5E7EB] max-w-[220px] truncate"
+            title={imageFilename}
+          >
+            {truncateFilename(imageFilename, 26)}
+          </span>
+        )}
       </div>
 
       {!imageUrl ? (
         <div
           className={cn(
-            'border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 py-12 cursor-pointer transition-all duration-200',
+            'border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 py-8 cursor-pointer transition-all duration-200',
             dragging ? 'border-[#111827] bg-gray-50' : 'border-[#E5E7EB] hover:border-gray-300 hover:bg-gray-50/50'
           )}
           onDrop={onDrop}
@@ -364,115 +624,180 @@ function FaceInputCard({
         >
           <IconUpload />
           <div className="text-center">
-            <p className="text-sm font-medium text-[#111827]">Drop an image here</p>
-            <p className="text-xs text-[#667085] mt-0.5">or browse from your computer</p>
+            <p className="text-sm font-semibold text-[#111827]">Drop image here or click to browse</p>
+            <p className="text-xs text-[#667085]">JPG, JPEG, PNG or WEBP (Max 10 MB)</p>
           </div>
-          <p className="text-[11px] text-[#98A2B3]">JPG, JPEG or PNG · Max 10 MB</p>
-          <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png" className="hidden" onChange={onFileChange} />
+          <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png,.webp" className="hidden" onChange={onFileChange} />
         </div>
+      ) : isAdjusting ? (
+        <RegionAdjuster
+          imageUrl={imageUrl}
+          initialBbox={cropBox || apiResult?.bbox || null}
+          onConfirm={(box) => {
+            onCropBoxChange(box)
+            setIsAdjusting(false)
+          }}
+          onCancel={() => setIsAdjusting(false)}
+        />
       ) : (
-        <div className="space-y-4">
-          <div className="relative rounded-xl overflow-hidden bg-gray-100" style={{ aspectRatio: '4/3' }}>
-            <img src={imageUrl} alt="Uploaded face" className="w-full h-full object-cover" />
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="border-2 border-[#059669] rounded-lg" style={{ width: '42%', height: '60%', boxShadow: '0 0 0 9999px rgba(0,0,0,0.25)' }} />
-            </div>
-            <div className="absolute top-3 left-3">
-              <span className="flex items-center gap-1.5 bg-emerald-600/90 backdrop-blur-sm text-white text-[11px] font-medium px-2.5 py-1 rounded-full">
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 5l2.5 2.5 4.5-5" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                Face detected
-              </span>
+        <div className="flex flex-col sm:flex-row gap-4 items-center">
+          <div className="relative w-32 h-32 rounded-xl overflow-hidden bg-gray-900 flex-shrink-0 border border-[#E5E7EB] flex items-center justify-center p-0.5">
+            <div className="relative max-w-full max-h-full flex items-center justify-center">
+              <img
+                ref={thumbImgRef}
+                src={imageUrl}
+                alt="Uploaded face"
+                onLoad={handleThumbImageLoad}
+                className="max-w-32 max-h-32 w-auto h-auto object-contain rounded-lg block"
+              />
+              {activeBbox && activeBbox.length === 4 && naturalSize && naturalSize.w > 0 && naturalSize.h > 0 && (
+                <div
+                  className="absolute border-2 border-[#059669] bg-[#059669]/20 rounded pointer-events-none transition-all duration-150 shadow-sm"
+                  style={{
+                    left: `${(activeBbox[0] / naturalSize.w) * 100}%`,
+                    top: `${(activeBbox[1] / naturalSize.h) * 100}%`,
+                    width: `${((activeBbox[2] - activeBbox[0]) / naturalSize.w) * 100}%`,
+                    height: `${((activeBbox[3] - activeBbox[1]) / naturalSize.h) * 100}%`,
+                  }}
+                />
+              )}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-[#F7F8FA] rounded-lg p-3 border border-[#E5E7EB]">
-              <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-1">Detection confidence</p>
-              <p className="font-mono text-sm font-semibold text-[#111827]">0.8149</p>
+          <div className="flex-1 w-full space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-[#F7F8FA] rounded-lg p-2.5 border border-[#E5E7EB]">
+                <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">Detection Score</p>
+                <p className="font-mono text-xs font-bold text-[#111827]">{detConfidence}</p>
+              </div>
+              <div className="bg-[#F7F8FA] rounded-lg p-2.5 border border-[#E5E7EB]">
+                <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">512D Embedding</p>
+                <p className={cn('font-mono text-xs font-bold', embeddingGenerated ? 'text-[#059669]' : 'text-[#98A2B3]')}>
+                  {embeddingGenerated ? 'Generated' : '--'}
+                </p>
+              </div>
             </div>
-            <div className="bg-[#F7F8FA] rounded-lg p-3 border border-[#E5E7EB]">
-              <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-1">Embedding</p>
-              <p className="font-mono text-sm font-semibold text-[#059669]">512D generated</p>
+
+            {cropBox && (
+              <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 text-emerald-800 px-2.5 py-1.5 rounded-lg text-xs">
+                <span className="font-medium flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Custom Face Region Selected ({cropBox.join(', ')})
+                </span>
+                <button
+                  onClick={() => onCropBoxChange(null)}
+                  className="text-emerald-700 hover:text-emerald-900 font-semibold text-[11px] underline"
+                >
+                  Reset Region
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={onRun} disabled={!imageUrl || isRunning} className="flex-1 min-w-[120px]">
+                {isRunning ? (
+                  <>
+                    <IconSpinner />
+                    Verifying...
+                  </>
+                ) : (
+                  'Run Verification'
+                )}
+              </Button>
+              <Button variant="outline" onClick={() => setIsAdjusting(true)} disabled={isRunning}>
+                Adjust Face Region
+              </Button>
+              <Button variant="outline" onClick={onClear} disabled={isRunning}>
+                Clear
+              </Button>
             </div>
           </div>
         </div>
       )}
-
-      <div className="flex gap-2.5 pt-1">
-        <Button
-          onClick={onRun}
-          disabled={!imageUrl || isRunning}
-          className="flex-1"
-        >
-          {isRunning ? <><IconSpinner /> Processing...</> : 'Run Verification'}
-        </Button>
-        {imageUrl && (
-          <Button variant="outline" onClick={onClear} disabled={isRunning}>
-            Clear
-          </Button>
-        )}
-      </div>
     </Card>
   )
 }
 
-// ─── Verification Overview (timeline) ────────────────────────────────────────
+// ─── 2. Pipeline Stepper Component (With Filled Green Checkmark Circles) ─────
 
-function VerificationOverview({ steps }: { steps: PipelineStep[] }) {
-  const timelineItems = [
-    { label: 'Face Detection', step: 0 },
-    { label: 'Face Embedding', step: 0 },
-    { label: 'Web Search', step: 1 },
-    { label: 'Candidate Verification', step: 2 },
-    { label: 'Blockchain Registration', step: 3 },
-    { label: 'Re-verification', step: 4 },
-  ]
-
+function PipelineStepper({ steps }: { steps: PipelineStep[] }) {
   return (
-    <Card className="p-6 flex flex-col gap-5">
-      <div>
-        <h2 className="text-[15px] font-semibold text-[#111827] mb-0.5">Verification Overview</h2>
-        <p className="text-xs text-[#667085]">Live pipeline status across all processing stages.</p>
-      </div>
+    <Card className="p-3.5">
+      <div className="flex items-center justify-between relative px-4">
+        {/* Render segmented connecting lines */}
+        <div className="absolute left-8 right-8 top-[16px] flex items-center justify-between z-0 pointer-events-none">
+          {steps.slice(0, steps.length - 1).map((step, i) => {
+            const nextStep = steps[i + 1]
+            const isCompletedSegment = step.state === 'done' && (nextStep.state === 'done' || nextStep.state === 'active')
+            const isFailedSegment = step.state === 'done' && nextStep.state === 'failed'
+            const isActiveSegment = step.state === 'active'
 
-      <div className="flex flex-col gap-0">
-        {timelineItems.map((item, i) => {
-          const stepState = steps[item.step]?.state ?? 'pending'
-          const done = stepState === 'done'
-          const active = stepState === 'active'
-          const isLast = i === timelineItems.length - 1
+            return (
+              <div
+                key={i}
+                className={cn(
+                  'h-0.5 flex-1 transition-all duration-300 mx-1',
+                  isCompletedSegment && 'bg-[#059669]',
+                  isFailedSegment && 'bg-red-500',
+                  isActiveSegment && 'bg-[#2563EB]',
+                  !isCompletedSegment && !isFailedSegment && !isActiveSegment && 'bg-[#E5E7EB]'
+                )}
+              />
+            )
+          })}
+        </div>
+
+        {/* Step Nodes */}
+        {steps.map((step, i) => {
+          const isDone = step.state === 'done'
+          const isActive = step.state === 'active'
+          const isFailed = step.state === 'failed'
+          const isSkipped = step.state === 'skipped'
+
           return (
-            <div key={i} className="flex gap-4">
-              <div className="flex flex-col items-center">
-                <div className={cn(
-                  'w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 transition-all duration-500',
-                  done ? 'bg-[#059669]' : active ? 'bg-[#2563EB]' : 'bg-[#E5E7EB]'
-                )}>
-                  {done && (
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                      <path d="M2 5l2.5 2.5 3.5-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  )}
-                  {active && <span className="w-2 h-2 rounded-full bg-white animate-pulse-dot" />}
-                </div>
-                {!isLast && <div className="w-px flex-1 bg-[#E5E7EB] my-1" />}
+            <div key={step.id} className="flex flex-col items-center gap-1.5 relative z-10 flex-1">
+              <div
+                className={cn(
+                  'w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300 border-2 shadow-sm',
+                  isDone && 'bg-[#059669] border-[#059669] text-white',
+                  isActive && 'bg-white border-[#2563EB] text-[#2563EB] ring-4 ring-blue-50',
+                  isFailed && 'bg-red-600 border-red-600 text-white',
+                  isSkipped && 'bg-gray-100 border-[#E5E7EB] text-[#98A2B3]',
+                  !isDone && !isActive && !isFailed && !isSkipped && 'bg-white border-[#E5E7EB] text-[#98A2B3]'
+                )}
+              >
+                {isDone ? (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M3 8.5l3.5 3.5 6.5-7" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : isFailed ? (
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                    <path d="M3 3l8 8M11 3l-8 8" stroke="white" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                ) : isSkipped ? (
+                  <span className="font-mono text-xs font-semibold text-gray-400">-</span>
+                ) : isActive ? (
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#2563EB] animate-pulse" />
+                ) : (
+                  <span className="font-mono text-xs font-semibold">{i + 1}</span>
+                )}
               </div>
-              <div className="pb-5 flex-1">
-                <div className="flex items-center justify-between">
-                  <p className={cn('text-sm font-medium', done ? 'text-[#111827]' : active ? 'text-[#2563EB]' : 'text-[#98A2B3]')}>
-                    {item.label}
-                  </p>
-                  {done && (
-                    <span className="text-[10px] font-medium text-emerald-600">
-                      Complete
-                    </span>
+
+              <div className="text-center">
+                <p
+                  className={cn(
+                    'text-[11px] font-bold leading-tight',
+                    isDone && 'text-[#059669]',
+                    isActive && 'text-[#2563EB]',
+                    isFailed && 'text-red-600',
+                    (isSkipped || (!isDone && !isActive && !isFailed)) && 'text-[#98A2B3]'
                   )}
-                  {active && (
-                    <span className="text-[10px] font-medium text-blue-600 animate-pulse-dot">
-                      Running...
-                    </span>
-                  )}
-                </div>
+                >
+                  {step.label}
+                </p>
+                <p className="text-[9px] text-[#98A2B3] leading-none mt-0.5">
+                  {isFailed ? 'Failed' : isSkipped ? 'Not reached' : step.sublabel}
+                </p>
               </div>
             </div>
           )
@@ -482,421 +807,572 @@ function VerificationOverview({ steps }: { steps: PipelineStep[] }) {
   )
 }
 
-// ─── Loading State ────────────────────────────────────────────────────────────
+// ─── Calm Dynamic Loading Progress Component ──────────────────────────────────
 
-function LoadingState({ currentStep }: { currentStep: number }) {
-  const stages = [
-    'Detecting face...',
-    'Generating embedding...',
-    'Searching Google Lens...',
-    'Evaluating candidates...',
-    'Registering blockchain record...',
-    'Re-verifying record...',
-  ]
+function DynamicLoadingState({
+  currentStep,
+  elapsedSeconds,
+  candidateCount
+}: {
+  currentStep: number
+  elapsedSeconds: number
+  candidateCount?: number
+}) {
+  let title = 'Processing pipeline...'
+  let description = 'Evaluating image and searching visual databases.'
+  let helper = 'Initial processing usually takes a few seconds.'
+  let secondary = 'Please keep this window open while verification completes.'
+
+  if (currentStep === 0) {
+    title = 'Detecting face...'
+    description = 'Analyzing the uploaded image.'
+    helper = 'Initial processing usually takes a few seconds.'
+    secondary = 'Detecting face landmarks and orientation.'
+  } else if (currentStep === 1) {
+    title = 'Generating face embedding...'
+    description = 'Creating a 512-dimensional face representation.'
+    helper = 'Preparing the face for visual verification.'
+    secondary = 'Normalizing vector space embeddings.'
+  } else if (currentStep === 2) {
+    title = 'Searching the open web...'
+    description = 'Finding visual matches with Google Lens.'
+    helper = 'Typical verification time: 2–3 minutes.'
+    if (elapsedSeconds > 45) {
+      secondary = 'Search is taking a little longer than usual. Open-web search can take a few minutes depending on the number of results.'
+    } else {
+      secondary = 'Open-web search and candidate verification may take a few minutes.'
+    }
+  } else if (currentStep === 3) {
+    title = 'Verifying candidates...'
+    description = 'Comparing the detected face against discovered web candidates.'
+    helper = candidateCount && candidateCount > 0
+      ? `${candidateCount} candidates discovered`
+      : 'Evaluating visual similarity against cutoff threshold.'
+    secondary = 'Running L2-normalized cosine similarity matching.'
+  } else if (currentStep >= 4) {
+    title = 'Registering blockchain proof...'
+    description = 'Creating the SHA-256 fingerprint and recording the verified result.'
+    helper = 'Finalizing verification proof.'
+    secondary = 'Performing final on-chain integrity check.'
+  }
+
   return (
-    <Card className="p-8 flex flex-col items-center gap-6">
-      <div className="relative">
-        <div className="w-16 h-16 rounded-full bg-[#F7F8FA] border-2 border-[#E5E7EB] flex items-center justify-center">
+    <Card className="p-4 border-blue-200 bg-blue-50/40">
+      <div className="flex items-start gap-3.5">
+        <div className="w-9 h-9 rounded-xl bg-blue-100 flex items-center justify-center flex-shrink-0 text-blue-600 mt-0.5">
           <IconSpinner />
         </div>
-      </div>
-      <div className="text-center">
-        <p className="text-sm font-semibold text-[#111827] mb-1">
-          {stages[Math.min(currentStep, stages.length - 1)]}
-        </p>
-        <p className="text-xs text-[#667085]">Pipeline is processing — do not close this window</p>
-      </div>
-      <div className="w-full max-w-xs space-y-2">
-        {stages.map((stage, i) => (
-          <div key={i} className="flex items-center gap-3">
-            <div className={cn(
-              'w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0',
-              i < currentStep ? 'bg-[#059669]' : i === currentStep ? 'bg-[#2563EB]' : 'bg-[#E5E7EB]'
-            )}>
-              {i < currentStep && (
-                <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-                  <path d="M1.5 4l1.8 1.8 3-3.3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-              {i === currentStep && <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse-dot" />}
-            </div>
-            <p className={cn(
-              'text-xs',
-              i < currentStep ? 'text-[#059669]' : i === currentStep ? 'text-[#2563EB] font-medium' : 'text-[#98A2B3]'
-            )}>
-              {stage}
-            </p>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-3 mb-1">
+            <span className="text-[11px] font-bold text-blue-900 tracking-wide uppercase">
+              VERIFICATION IN PROGRESS
+            </span>
+            <span className="text-[11px] font-semibold text-blue-800 bg-blue-100/90 px-2.5 py-0.5 rounded-full">
+              Typical time: 2–3 minutes
+            </span>
           </div>
-        ))}
+
+          <h3 className="text-sm font-bold text-[#111827] mb-0.5">{title}</h3>
+          <p className="text-xs text-[#667085] mb-2">{description}</p>
+
+          <div className="pt-2 border-t border-blue-100/80 space-y-1 text-[11px] text-blue-900">
+            <div className="flex items-center gap-1.5 font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+              <span>{helper}</span>
+            </div>
+            {secondary && <p className="text-[10px] text-blue-700/90 pl-3 leading-relaxed">{secondary}</p>}
+          </div>
+        </div>
       </div>
     </Card>
   )
 }
 
-// ─── Success Results ──────────────────────────────────────────────────────────
+// ─── Search Failure / Timeout Card ─────────────────────────────────────────────
 
-function SuccessResults({ imageFilename, result }: { imageFilename: string; result?: any }) {
-  const cand = result?.candidate
-  const bchain = result?.blockchain
-  const evaluated = result?.candidates_evaluated ?? 59
-  const similarity = cand?.similarity ? cand.similarity.toFixed(4) : "0.9709"
-  const threshold = result?.threshold ? result.threshold.toFixed(4) : "0.5000"
-  const title = cand?.title ?? "Photo of Albert Einstein was taken by photographer..."
-  const domain = cand?.domain ?? "facebook.com"
-  const sourceUrl = cand?.source_url ?? "https://facebook.com"
-  const candidateImg = cand?.candidate_image_url ?? "https://images.unsplash.com/photo-1594736797933-d0501ba2fe65?w=96&h=112&fit=crop&auto=format"
-  const fingerprint = bchain?.fingerprint ?? "2a1929b44f3d4eb3b541db508f9335491444515a14825348e87edfc82ca30550"
-  const recordId = bchain?.record_id ?? "46e594d4afb39a7a53c7d5f605a9f23dca111318f3adcf42b81f9484aa721fe5"
-  const chainIntegrity = bchain?.chain_integrity ?? "PASSED"
-  const reverification = bchain?.reverification ?? "VERIFIED"
+function SearchErrorCard({ result, onRetry }: { result: ApiResultData; onRetry: () => void }) {
+  const threshold = result.threshold ? result.threshold.toFixed(4) : '0.5000'
+  const errMessage = result.error?.replace(/^Search failed:\s*/i, '') || 'Google Lens search timed out before candidates could be retrieved.'
 
   return (
-    <div className="space-y-6 animate-slide-in">
-      {/* Web Search Results */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="font-mono text-xs text-[#98A2B3]">02</span>
-              <h2 className="text-[15px] font-semibold text-[#111827]">Web Search Results</h2>
-            </div>
-            <p className="text-xs text-[#667085]">Candidates retrieved dynamically from Google Lens</p>
+    <Card className="p-5 border-amber-300 bg-amber-50/50">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-amber-500 flex items-center justify-center text-white font-bold text-xs">
+            ⚠
           </div>
-          <div className="text-right">
-            <p className="font-mono text-xl font-semibold text-[#111827]">{evaluated}</p>
-            <p className="text-xs text-[#667085]">candidates discovered</p>
+          <span className="text-xs font-bold text-amber-900 tracking-wide uppercase">
+            VERIFICATION COULD NOT COMPLETE
+          </span>
+        </div>
+        <StatusPill status="warning" label="SEARCH TIMEOUT" />
+      </div>
+
+      <h3 className="text-sm font-bold text-amber-950 mb-1">
+        Open-web search could not be completed.
+      </h3>
+      <p className="text-xs text-amber-900 mb-3 leading-relaxed">
+        {errMessage} The query face was detected successfully, but visual candidate discovery on Google Lens timed out before results could be evaluated.
+      </p>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-white p-3 rounded-lg border border-amber-200 mb-3">
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Candidates</p>
+          <p className="font-mono text-sm font-bold text-amber-950">—</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Best Similarity</p>
+          <p className="font-mono text-sm font-bold text-amber-950">—</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Required Cutoff</p>
+          <p className="font-mono text-sm font-bold text-amber-950">{threshold}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Blockchain</p>
+          <p className="font-mono text-sm font-bold text-amber-900">Not registered</p>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-2 border-t border-amber-200/80 text-xs">
+        <p className="text-amber-800 text-[11px]">
+          Please check your network connection and click below to try verification again.
+        </p>
+        <Button onClick={onRetry} variant="primary" className="py-1.5 px-3">
+          Try Verification Again
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
+// ─── 3. Primary Candidate Result Components ───────────────────────────────────
+
+function VerifiedCandidateCard({ result }: { result: ApiResultData }) {
+  const cand = result.candidate
+  if (!cand) return null
+
+  const similarity = cand.similarity ? cand.similarity.toFixed(4) : '--'
+  const threshold = result.threshold ? result.threshold.toFixed(4) : '0.5000'
+  const domain = cand.domain || 'web'
+  const title = cand.title || 'Verified Web Candidate'
+  const sourceUrl = cand.source_url || '#'
+  const candidateImg = cand.candidate_image_url
+
+  return (
+    <Card className="p-5 border-2 border-emerald-500/30 bg-gradient-to-br from-white via-white to-emerald-50/20 shadow-sm">
+      <div className="flex items-center justify-between gap-4 mb-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="w-5 h-5 rounded bg-emerald-600 flex items-center justify-center text-white font-bold text-xs">
+            ✓
+          </div>
+          <span className="text-xs font-bold text-emerald-800 tracking-wide uppercase">VERIFICATION COMPLETE</span>
+        </div>
+        <StatusPill status="success" label="VERIFIED MATCH" />
+      </div>
+
+      <div className="flex flex-col sm:flex-row gap-4">
+        {candidateImg && (
+          <div className="w-28 h-32 rounded-xl bg-gray-100 flex-shrink-0 overflow-hidden border border-[#E5E7EB]">
+            <img
+              src={candidateImg}
+              alt="Matched candidate"
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none'
+              }}
+            />
+          </div>
+        )}
+        <div className="flex-1 min-w-0 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-xs font-bold text-[#111827] bg-gray-100 px-2 py-0.5 rounded border border-[#E5E7EB]">{domain}</span>
+              {sourceUrl !== '#' && (
+                <a
+                  href={sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-[#2563EB] hover:underline inline-flex items-center gap-1 font-semibold"
+                >
+                  Open Result Source
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 8L8 2M8 2H5M8 2v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                </a>
+              )}
+            </div>
+            <h3 className="text-sm font-bold text-[#111827] mb-1 leading-snug">
+              {title}
+            </h3>
+          </div>
+
+          <div className="pt-3 border-t border-[#E5E7EB] mt-2">
+            <div className="flex items-center gap-6">
+              <div>
+                <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">Face Similarity</p>
+                <p className="font-mono text-xl font-extrabold text-[#059669]">{similarity}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">Threshold</p>
+                <p className="font-mono text-xl font-bold text-[#111827]">{threshold}</p>
+              </div>
+              <div className="flex-1 hidden sm:block">
+                <div className="h-2 bg-[#E5E7EB] rounded-full overflow-hidden">
+                  <div
+                    className="h-2 bg-[#059669] rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, (parseFloat(similarity) || 0) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-[#059669] font-semibold mt-1">✓ Candidate exceeds verification threshold</p>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
+    </Card>
+  )
+}
 
-        <Card className="p-6">
-          <div className="flex gap-5">
-            <div className="w-24 h-28 rounded-xl bg-gradient-to-br from-gray-200 to-gray-100 flex-shrink-0 overflow-hidden">
-              <img
-                src={candidateImg}
-                alt="Candidate image"
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = "https://images.unsplash.com/photo-1594736797933-d0501ba2fe65?w=96&h=112&fit=crop&auto=format"
-                }}
-              />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center">
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                        <path d="M6 2H2v6h6V6" stroke="white" strokeWidth="1" strokeLinecap="round" />
-                        <path d="M5 5L8 2M8 2H6M8 2v2" stroke="white" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                    <span className="text-xs font-semibold text-[#111827]">{domain}</span>
-                  </div>
-                  <p className="text-sm text-[#111827] font-medium mb-1 leading-snug">
-                    {title}
-                  </p>
-                  <p className="text-xs text-[#667085] mb-2">{domain}</p>
-                  <a href={sourceUrl} target="_blank" rel="noreferrer" className="text-xs text-[#2563EB] hover:underline flex items-center gap-1 font-medium inline-flex">
-                    Open Source
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 8L8 2M8 2H5M8 2v3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  </a>
-                </div>
-                <StatusPill status="success" label="VERIFIED" />
-              </div>
+function UnverifiedCandidateCard({ result }: { result: ApiResultData }) {
+  const evaluated = result.candidates_evaluated ?? 0
+  const highestSim = result.highest_similarity ? result.highest_similarity.toFixed(4) : '--'
+  const threshold = result.threshold ? result.threshold.toFixed(4) : '0.5000'
+  const faceDetected = result.face_detected === true
 
-              <div className="mt-4 pt-4 border-t border-[#E5E7EB]">
-                <div className="flex items-center gap-8">
-                  <div>
-                    <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-0.5">Face Similarity</p>
-                    <p className="font-mono text-2xl font-semibold text-[#059669]">{similarity}</p>
-                  </div>
-                  <div>
-                    <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-0.5">Threshold</p>
-                    <p className="font-mono text-2xl font-semibold text-[#111827]">{threshold}</p>
-                  </div>
-                  <div className="flex-1">
-                    <div className="h-2 bg-[#E5E7EB] rounded-full overflow-hidden">
-                      <div className="h-2 bg-[#059669] rounded-full" style={{ width: `${Math.min(100, parseFloat(similarity) * 100)}%` }} />
-                    </div>
-                    <p className="text-[10px] text-[#667085] mt-1.5">Candidate face exceeds the configured similarity threshold.</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+  return (
+    <Card className="p-5 border-amber-200 bg-amber-50/40">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="w-5 h-5 rounded bg-amber-500 flex items-center justify-center text-white font-bold text-xs">
+            !
           </div>
-        </Card>
+          <span className="text-xs font-bold text-amber-900 tracking-wide uppercase">NO VERIFIED MATCH</span>
+        </div>
+        <StatusPill status="warning" label="NO MATCH" />
       </div>
 
-      {/* Metrics */}
-      <div className="grid grid-cols-4 gap-4">
-        <MetricCard label="Candidates Evaluated" value={evaluated} />
-        <MetricCard label="Faces Detected" value="1+" />
-        <MetricCard label="Best Similarity" value={similarity} sub="Score" />
-        <MetricCard label="Threshold" value={threshold} sub="Required" />
+      <p className="text-xs font-semibold text-amber-950 mb-3">
+        {evaluated === 0
+          ? 'No matching web candidates were found.'
+          : 'Candidates were found, but no candidate exceeded the verification threshold.'}
+      </p>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 bg-white p-3 rounded-lg border border-amber-200/80 mb-2">
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Evaluated</p>
+          <p className="font-mono text-sm font-bold text-amber-950">{evaluated} candidates</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Best Similarity</p>
+          <p className="font-mono text-sm font-bold text-amber-950">{highestSim}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Required Cutoff</p>
+          <p className="font-mono text-sm font-bold text-amber-950">{threshold}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-0.5">Blockchain Record</p>
+          <p className="font-mono text-sm font-bold text-amber-950">None</p>
+        </div>
       </div>
 
-      {/* Blockchain + Summary */}
-      <div className="grid grid-cols-[1fr_320px] gap-5">
-        <Card className="p-6 space-y-5">
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="font-mono text-xs text-[#98A2B3]">03</span>
-                <h2 className="text-[15px] font-semibold text-[#111827]">Blockchain Verification</h2>
-              </div>
-              <p className="text-xs text-[#667085]">SHA-256 hash-chain ledger — tamper-evident record</p>
-            </div>
-            <StatusPill status="success" label="VERIFIED" />
-          </div>
+      <p className="text-[11px] text-amber-800">
+        {!faceDetected
+          ? 'No face was detected in the input image.'
+          : 'No candidate image surpassed the threshold. No blockchain record was registered.'}
+      </p>
+    </Card>
+  )
+}
 
-          <div className="space-y-3">
-            <HashField label="SHA-256 Fingerprint" value={fingerprint} />
-            <HashField label="Blockchain Record" value={recordId} />
-          </div>
+// ─── 4. Metrics Row Component ─────────────────────────────────────────────────
 
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: 'Chain Integrity', value: chainIntegrity, status: 'success' as const },
-              { label: 'Record Status', value: 'REGISTERED', status: 'success' as const },
-              { label: 'On-chain Re-verification', value: reverification, status: 'success' as const },
-            ].map(row => (
-              <div key={row.label} className="bg-[#F7F8FA] rounded-lg p-3.5 border border-[#E5E7EB]">
-                <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-2">{row.label}</p>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                  <span className="font-mono text-xs font-semibold text-[#059669]">{row.value}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+function MetricsRow({ result }: { result: ApiResultData }) {
+  const isSearchFailed = result.search_status === 'failed' || result.error_stage === 'web_search'
+  const evaluated = isSearchFailed ? '—' : (result.candidates_evaluated ?? 0)
+  const faceDetected = result.face_detected ? '1' : '0'
+  const similarity = isSearchFailed
+    ? '—'
+    : (result.candidate?.similarity
+        ? result.candidate.similarity.toFixed(4)
+        : (result.highest_similarity ? result.highest_similarity.toFixed(4) : '--'))
+  const threshold = result.threshold ? result.threshold.toFixed(4) : '0.5000'
 
-          {/* Chain visual */}
-          <div>
-            <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-3">Chain Structure</p>
-            <div className="flex items-center gap-0">
-              {['Genesis', 'Block', 'Verified Record', 'Integrity Check'].map((label, i) => (
-                <div key={i} className="flex items-center">
-                  <div className="flex flex-col items-center">
-                    <div className="h-8 w-24 bg-[#F7F8FA] border border-[#E5E7EB] rounded-lg flex items-center justify-center">
-                      <span className="text-[10px] font-medium text-[#667085]">{label}</span>
-                    </div>
-                  </div>
-                  {i < 3 && (
-                    <div className="flex items-center gap-0 mx-1">
-                      <div className="w-4 h-px bg-[#059669]" />
-                      <svg width="6" height="8" viewBox="0 0 6 8" fill="none">
-                        <path d="M1 0l4 4-4 4" stroke="#059669" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-
-        <Card className="p-5">
-          <h3 className="text-sm font-semibold text-[#111827] mb-4">Verification Summary</h3>
-          <div className="space-y-2.5">
-            {[
-              { label: 'Input', value: imageFilename },
-              { label: 'Candidates', value: String(evaluated) },
-              { label: 'Source', value: domain },
-              { label: 'Similarity', value: similarity },
-              { label: 'Threshold', value: threshold },
-              { label: 'Blockchain', value: 'Registered' },
-              { label: 'Integrity', value: chainIntegrity },
-              { label: 'Re-verification', value: reverification },
-            ].map(row => (
-              <div key={row.label} className="flex justify-between items-baseline gap-3 py-1.5 border-b border-[#F7F8FA] last:border-0">
-                <span className="text-xs text-[#667085] flex-shrink-0">{row.label}</span>
-                <span className={cn(
-                  'text-xs font-medium text-right min-w-0',
-                  ['PASSED', 'Registered', 'VERIFIED'].includes(row.value) ? 'text-[#059669] font-mono' : 'text-[#111827] font-mono'
-                )}>
-                  {row.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </div>
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      <MetricCard label="Candidates" value={evaluated} />
+      <MetricCard label="Faces Detected" value={faceDetected} />
+      <MetricCard label="Best Similarity" value={similarity} sub="Score" />
+      <MetricCard label="Threshold" value={threshold} sub="Required" />
     </div>
   )
 }
 
-// ─── Failure Results ──────────────────────────────────────────────────────────
+// ─── 6. Blockchain Proof Component ────────────────────────────────────────────
 
-function FailureResults({ imageFilename, result }: { imageFilename: string; result?: any }) {
-  const evaluated = result?.candidates_evaluated ?? 59
-  const highestSim = result?.highest_similarity ? result.highest_similarity.toFixed(4) : "0.3699"
-  const threshold = result?.threshold ? result.threshold.toFixed(4) : "0.5000"
+function BlockchainProofCard({ blockchain }: { blockchain: ApiResultData['blockchain'] }) {
+  if (!blockchain) return null
+
+  const fingerprint = blockchain.fingerprint || '--'
+  const recordId = blockchain.record_id || blockchain.block_hash || '--'
+  const previousHash = blockchain.previous_hash || '--'
+  const integrity = blockchain.chain_integrity || 'PASSED'
+  const reverification = blockchain.reverification || 'VERIFIED'
 
   return (
-    <div className="space-y-6 animate-slide-in">
-      <Card className="p-6">
-        <div className="flex items-start justify-between mb-5">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="font-mono text-xs text-[#98A2B3]">02</span>
-              <h2 className="text-[15px] font-semibold text-[#111827]">Web Search Results</h2>
-            </div>
-            <p className="text-xs text-[#667085]">Candidates retrieved dynamically from Google Lens</p>
+    <Card className="p-4 border border-emerald-100 bg-gradient-to-r from-white to-emerald-50/20">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-emerald-100 flex items-center justify-center">
+            <IconShield />
           </div>
-          <StatusPill status="warning" label="NO MATCH" />
+          <div>
+            <h3 className="text-xs font-bold text-[#111827]">Blockchain Proof</h3>
+            <p className="text-[10px] text-[#667085]">SHA-256 tamper-evident ledger registration</p>
+          </div>
+        </div>
+        <StatusPill status="success" label="REGISTERED" />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-3">
+        <div className="bg-white rounded-lg p-2.5 border border-[#E5E7EB] flex items-center justify-between">
+          <div className="min-w-0 pr-2">
+            <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">SHA-256 Fingerprint</p>
+            <p className="font-mono text-xs font-bold text-[#111827] truncate" title={fingerprint}>
+              {truncateHash(fingerprint, 10, 8)}
+            </p>
+          </div>
+          <IconCopy textToCopy={fingerprint} label="Fingerprint" />
         </div>
 
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 space-y-4">
-          <p className="text-sm font-semibold text-amber-900">No Verified Match Found</p>
-          <div className="grid grid-cols-4 gap-4">
-            <div>
-              <p className="text-[10px] text-amber-600 uppercase tracking-wider mb-1">Candidates Evaluated</p>
-              <p className="font-mono text-xl font-semibold text-amber-900">{evaluated}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-amber-600 uppercase tracking-wider mb-1">Highest Similarity</p>
-              <p className="font-mono text-xl font-semibold text-amber-900">{highestSim}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-amber-600 uppercase tracking-wider mb-1">Required Threshold</p>
-              <p className="font-mono text-xl font-semibold text-amber-900">{threshold}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-amber-600 uppercase tracking-wider mb-1">Blockchain</p>
-              <p className="font-mono text-xl font-semibold text-amber-900">No record</p>
-            </div>
+        <div className="bg-white rounded-lg p-2.5 border border-[#E5E7EB] flex items-center justify-between">
+          <div className="min-w-0 pr-2">
+            <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">Block Hash</p>
+            <p className="font-mono text-xs font-bold text-[#111827] truncate" title={recordId}>
+              {truncateHash(recordId, 10, 8)}
+            </p>
           </div>
-          <div className="h-1.5 bg-amber-200 rounded-full overflow-hidden">
-            <div className="h-1.5 bg-amber-500 rounded-full" style={{ width: `${Math.min(100, parseFloat(highestSim) * 100)}%` }} />
-          </div>
-          <p className="text-xs text-amber-700">
-            No candidate exceeded the configured verification threshold. No blockchain record was created.
-          </p>
+          <IconCopy textToCopy={recordId} label="Block Hash" />
         </div>
-      </Card>
-    </div>
+
+        <div className="bg-white rounded-lg p-2.5 border border-[#E5E7EB] flex items-center justify-between">
+          <div className="min-w-0 pr-2">
+            <p className="text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider mb-0.5">Previous Hash</p>
+            <p className="font-mono text-xs font-bold text-[#111827] truncate" title={previousHash}>
+              {truncateHash(previousHash, 10, 8)}
+            </p>
+          </div>
+          <IconCopy textToCopy={previousHash} label="Previous Hash" />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-2.5 border-t border-[#E5E7EB]/80 text-xs">
+        <div className="flex items-center gap-5">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-[#667085]">Chain Integrity:</span>
+            <span className="font-mono font-bold text-[11px] text-[#059669]">{integrity}</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] text-[#667085]">On-Chain Re-verification:</span>
+            <span className="font-mono font-bold text-[11px] text-[#059669]">{reverification}</span>
+          </div>
+        </div>
+
+        <div className="hidden sm:flex items-center gap-1 text-[10px] text-[#98A2B3] font-mono">
+          <span>Genesis</span>
+          <span>→</span>
+          <span>Block</span>
+          <span>→</span>
+          <span className="font-bold text-[#059669]">Record</span>
+        </div>
+      </div>
+    </Card>
   )
 }
 
-// ─── Pipeline Log ─────────────────────────────────────────────────────────────
+// ─── 8. Pipeline Activity Log Component ───────────────────────────────────────
 
-function PipelineLog({ entries }: { entries: LogEntry[] }) {
+function PipelineActivityLog({ entries }: { entries: LogEntry[] }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+
+  if (!entries || entries.length === 0) return null
+
   const dotColors = {
     info: 'bg-blue-400',
     success: 'bg-emerald-500',
     warning: 'bg-amber-500',
+    error: 'bg-red-500',
   }
   const textColors = {
     info: 'text-[#667085]',
     success: 'text-[#059669]',
     warning: 'text-amber-600',
+    error: 'text-red-600',
   }
+
   return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold text-[#111827] mb-4 flex items-center gap-2">
-        Pipeline Activity
-        <span className="text-[10px] font-normal text-[#98A2B3] font-mono">
-          {entries.length} events
-        </span>
-      </h3>
-      <div className="bg-[#F7F8FA] rounded-xl border border-[#E5E7EB] p-4 max-h-56 overflow-y-auto">
-        <div className="space-y-1.5">
+    <Card className="p-3.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <h3 className="text-xs font-bold text-[#111827]">Pipeline Activity</h3>
+          <span className="text-[10px] font-medium text-[#667085] bg-gray-100 px-2 py-0.5 rounded-full font-mono">
+            {entries.length} events
+          </span>
+        </div>
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="text-xs font-semibold text-[#2563EB] hover:text-blue-800 transition-colors flex items-center gap-1"
+        >
+          {isExpanded ? 'Collapse Logs' : 'Expand Logs'}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            className={cn('transition-transform duration-200', isExpanded && 'rotate-180')}
+          >
+            <path d="M2.5 4.5l3.5 3.5 3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      {isExpanded && (
+        <div className="mt-3 bg-[#F7F8FA] rounded-lg border border-[#E5E7EB] p-3 max-h-56 overflow-y-auto space-y-1.5">
           {entries.map((entry, i) => (
-            <div key={i} className={cn('flex items-start gap-3 animate-slide-in')} style={{ animationDelay: `${i * 30}ms` }}>
-              <span className={cn('w-1.5 h-1.5 rounded-full mt-[5px] flex-shrink-0', dotColors[entry.status])} />
-              <span className="font-mono text-[11px] text-[#98A2B3] flex-shrink-0">[{entry.time}]</span>
-              <span className={cn('font-mono text-[11px]', textColors[entry.status])}>{entry.message}</span>
+            <div key={i} className="flex items-start gap-2.5">
+              <span className={cn('w-1.5 h-1.5 rounded-full mt-[5px] flex-shrink-0', dotColors[entry.status || 'info'])} />
+              <span className="font-mono text-[10px] text-[#98A2B3] flex-shrink-0">[{entry.time || formatNow()}]</span>
+              <span className={cn('font-mono text-[11px] leading-snug', textColors[entry.status || 'info'])}>{entry.message}</span>
             </div>
           ))}
-          {entries.length === 0 && (
-            <p className="font-mono text-[11px] text-[#98A2B3]">Awaiting pipeline execution...</p>
-          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// ─── Error Card ───────────────────────────────────────────────────────────────
+
+function ErrorCard({ message }: { message: string }) {
+  return (
+    <Card className="p-4 border-red-200 bg-red-50">
+      <div className="flex items-center gap-3 text-red-800">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="10" r="9" stroke="#DC2626" strokeWidth="1.5" />
+          <path d="M10 6v5M10 14v.5" stroke="#DC2626" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+        <div>
+          <p className="text-xs font-bold">Verification Request Failed</p>
+          <p className="text-xs text-red-700 mt-0.5">{message}</p>
         </div>
       </div>
     </Card>
   )
 }
 
-// ─── Verification Page ────────────────────────────────────────────────────────
+// ─── Verification Page Component ──────────────────────────────────────────────
 
-function VerificationPage() {
+function VerificationPage({ onRecordSuccess }: { onRecordSuccess: (record: HistoryRecord) => void }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [imageFilename, setImageFilename] = useState('einstein_demo.jpg')
+  const [imageFilename, setImageFilename] = useState('')
+  const [confirmedCropBox, setConfirmedCropBox] = useState<number[] | null>(null)
   const [pipelineState, setPipelineState] = useState<PipelineState>('idle')
   const [steps, setSteps] = useState<PipelineStep[]>(PIPELINE_STEPS_INITIAL)
   const [logEntries, setLogEntries] = useState<LogEntry[]>([])
   const [loadingStep, setLoadingStep] = useState(0)
-  const [simulateFailure, setSimulateFailure] = useState(false)
-  const [apiResult, setApiResult] = useState<any>(null)
+  const [apiResult, setApiResult] = useState<ApiResultData | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  // Internal duration tracking (not exposed as a stopwatch in primary UI)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const timerRef = useRef<number | null>(null)
+  const startTimeRef = useRef<number>(0)
+
+  const startTimer = () => {
+    setElapsedSeconds(0)
+    startTimeRef.current = Date.now()
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = window.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTimeRef.current) / 1000)
+      setElapsedSeconds(elapsed)
+    }, 1000)
+  }
+
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  const resetTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    setElapsedSeconds(0)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [])
 
   const resetPipeline = () => {
     setSteps(PIPELINE_STEPS_INITIAL)
     setLogEntries([])
     setLoadingStep(0)
     setApiResult(null)
+    setErrorMessage(null)
   }
 
   const handleImageSelect = (url: string, file?: File) => {
     setImageUrl(url)
     setSelectedFile(file || null)
+    setConfirmedCropBox(null)
     if (file) {
       setImageFilename(file.name)
     } else {
-      setImageFilename('einstein_demo.jpg')
+      setImageFilename('uploaded_image.jpg')
     }
     resetPipeline()
+    resetTimer()
     setPipelineState('idle')
   }
 
   const handleClear = () => {
+    resetTimer()
     setImageUrl(null)
     setSelectedFile(null)
+    setImageFilename('')
+    setConfirmedCropBox(null)
     setApiResult(null)
-    resetPipeline()
+    setErrorMessage(null)
+    setLogEntries([])
+    setSteps(PIPELINE_STEPS_INITIAL)
     setPipelineState('idle')
   }
 
-  const runSimulatedPipeline = () => {
-    resetPipeline()
-    setPipelineState('loading')
-    const targetLog = simulateFailure ? FAILURE_LOG : SUCCESS_LOG
-    const stepSequence = [0, 1, 2, 2, 3, 4]
-
-    targetLog.forEach((entry, i) => {
-      setTimeout(() => {
-        setLoadingStep(i)
-        setLogEntries(prev => [...prev, entry])
-
-        const stepIdx = stepSequence[Math.min(i, stepSequence.length - 1)]
-        setSteps(prev => prev.map((s, si) => {
-          if (si < stepIdx) return { ...s, state: 'done' }
-          if (si === stepIdx) return { ...s, state: 'active' }
-          return { ...s, state: 'pending' }
-        }))
-
-        if (i === targetLog.length - 1) {
-          setTimeout(() => {
-            setSteps(prev => prev.map(s => ({ ...s, state: 'done' })))
-            setPipelineState(simulateFailure ? 'failure' : 'success')
-          }, 600)
-        }
-      }, i * 700)
-    })
-  }
-
   const handleRun = async () => {
+    if (!imageUrl) return
+
     resetPipeline()
     setPipelineState('loading')
+    setErrorMessage(null)
+    startTimer()
 
     const formData = new FormData()
     if (selectedFile) {
       formData.append('file', selectedFile)
     } else {
-      formData.append('image_name', imageFilename)
+      formData.append('image_name', imageFilename || 'uploaded_image.jpg')
     }
-    formData.append('provider', simulateFailure ? 'mock' : 'web')
+    formData.append('provider', 'web')
     formData.append('threshold', '0.5')
+    if (confirmedCropBox && confirmedCropBox.length === 4) {
+      formData.append('crop_box', confirmedCropBox.join(','))
+    }
 
     try {
       setLoadingStep(0)
@@ -908,15 +1384,24 @@ function VerificationPage() {
       })
 
       if (!res.ok) {
-        throw new Error(`API returned HTTP ${res.status}`)
+        let errDetail = `Server returned HTTP ${res.status}`
+        try {
+          const errData = await res.json()
+          if (errData.detail) errDetail = errData.detail
+        } catch {}
+        throw new Error(errDetail)
       }
 
-      const data = await res.json()
+      const data: ApiResultData = await res.json()
       setApiResult(data)
 
-      if (data.logs && Array.isArray(data.logs) && data.logs.length > 0) {
+      const logs = data.logs || []
+      const isSearchFailed = data.search_status === 'failed' || data.error_stage === 'web_search' || (!data.success && data.error?.toLowerCase().includes('search failed'))
+      const hasMatch = data.match_found && data.success
+
+      if (logs.length > 0) {
         const stepSequence = [0, 1, 2, 2, 3, 4]
-        data.logs.forEach((entry: LogEntry, i: number) => {
+        logs.forEach((entry, i) => {
           setTimeout(() => {
             const stepIdx = stepSequence[Math.min(i, stepSequence.length - 1)]
             setLoadingStep(stepIdx)
@@ -926,214 +1411,307 @@ function VerificationPage() {
               if (si === stepIdx) return { ...s, state: 'active' }
               return { ...s, state: 'pending' }
             }))
-          }, i * 350)
+          }, i * 180)
         })
 
         setTimeout(() => {
-          setSteps(prev => prev.map(s => ({ ...s, state: 'done' })))
-          setPipelineState(data.match_found ? 'success' : 'failure')
-        }, data.logs.length * 350 + 400)
+          stopTimer()
+
+          if (isSearchFailed) {
+            setSteps([
+              { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+              { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'failed' },
+              { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'skipped' },
+              { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
+              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+            ])
+            setPipelineState('search_error')
+          } else if (hasMatch) {
+            setSteps([
+              { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+              { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
+              { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
+              { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'done' },
+              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'done' },
+            ])
+            setPipelineState('success')
+
+            // Record session history
+            onRecordSuccess({
+              id: `rec-${Date.now()}`,
+              date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+              input: imageFilename || 'uploaded_image.jpg',
+              candidates: data.candidates_evaluated,
+              similarity: data.candidate?.similarity ? data.candidate.similarity.toFixed(4) : (data.highest_similarity?.toFixed(4) || '--'),
+              source: data.candidate?.domain || 'web',
+              blockchain: 'Verified',
+              status: 'success'
+            })
+          } else {
+            // Search succeeded, but no match surpassed threshold
+            setSteps([
+              { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+              { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
+              { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
+              { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
+              { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+            ])
+            setPipelineState('failure')
+
+            onRecordSuccess({
+              id: `rec-${Date.now()}`,
+              date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+              input: imageFilename || 'uploaded_image.jpg',
+              candidates: data.candidates_evaluated,
+              similarity: data.highest_similarity ? data.highest_similarity.toFixed(4) : '--',
+              source: 'web',
+              blockchain: 'None',
+              status: 'failure'
+            })
+          }
+        }, logs.length * 180 + 250)
       } else {
-        setSteps(prev => prev.map(s => ({ ...s, state: 'done' })))
-        setPipelineState(data.match_found ? 'success' : 'failure')
+        stopTimer()
+        if (isSearchFailed) {
+          setSteps([
+            { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+            { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'failed' },
+            { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'skipped' },
+            { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
+            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+          ])
+          setPipelineState('search_error')
+        } else if (hasMatch) {
+          setSteps([
+            { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+            { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
+            { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
+            { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'done' },
+            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'done' },
+          ])
+          setPipelineState('success')
+        } else {
+          setSteps([
+            { id: 1, label: 'Face Detection', sublabel: 'InsightFace', state: 'done' },
+            { id: 2, label: 'Search', sublabel: 'Google Lens', state: 'done' },
+            { id: 3, label: 'Verify', sublabel: 'Cosine Match', state: 'done' },
+            { id: 4, label: 'Blockchain', sublabel: 'SHA-256 Ledger', state: 'skipped' },
+            { id: 5, label: 'Re-Verify', sublabel: 'On-Chain Audit', state: 'skipped' },
+          ])
+          setPipelineState('failure')
+        }
       }
-    } catch (err) {
-      console.warn("API request failed or offline. Falling back to simulated run:", err)
-      runSimulatedPipeline()
+    } catch (err: any) {
+      console.error('Verification error:', err)
+      stopTimer()
+      setErrorMessage(err.message || 'Failed to connect to verification backend.')
+      setPipelineState('error')
+      setSteps(prev => prev.map(s => s.state === 'active' ? { ...s, state: 'failed' } : s))
     }
   }
 
   return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#111827] tracking-tight mb-1">Face Verification Pipeline</h1>
-          <p className="text-sm text-[#667085] max-w-2xl">
-            Discover visual candidates on the open web, independently verify the face, and anchor verified results to a tamper-evident ledger.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <StatusPill status="success" label="Pipeline Ready" />
-          <div className="flex items-center gap-1.5 text-xs text-[#667085] bg-white border border-[#E5E7EB] rounded-lg px-3 py-1.5">
-            <IconShield />
-            Local Verification Engine
-          </div>
-        </div>
-      </div>
+    <div className="space-y-4 max-w-3xl mx-auto">
+      {/* 1. Face Input Card */}
+      <FaceInputCard
+        imageUrl={imageUrl}
+        imageFilename={imageFilename}
+        cropBox={confirmedCropBox}
+        onCropBoxChange={setConfirmedCropBox}
+        onImageSelect={handleImageSelect}
+        onClear={handleClear}
+        onRun={handleRun}
+        pipelineState={pipelineState}
+        apiResult={apiResult}
+      />
 
-      {/* Face input + overview */}
-      <div className="grid grid-cols-[1fr_320px] gap-5">
-        <FaceInputCard
-          imageUrl={imageUrl}
-          onImageSelect={handleImageSelect}
-          onClear={handleClear}
-          onRun={handleRun}
-          pipelineState={pipelineState}
-        />
-        <VerificationOverview steps={steps} />
-      </div>
-
-      {/* Pipeline stepper */}
+      {/* 2. Pipeline Stepper */}
       <PipelineStepper steps={steps} />
 
-      {/* Simulate failure toggle */}
-      {pipelineState === 'idle' && (
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setSimulateFailure(v => !v)}
-            className={cn(
-              'w-8 h-4 rounded-full transition-colors duration-200 relative flex-shrink-0',
-              simulateFailure ? 'bg-amber-500' : 'bg-[#E5E7EB]'
-            )}
-          >
-            <span className={cn(
-              'absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform duration-200',
-              simulateFailure ? 'translate-x-4' : 'translate-x-0.5'
-            )} />
-          </button>
-          <span className="text-xs text-[#667085]">Simulate failure state</span>
-        </div>
+      {/* Dynamic Calm Loading Progress */}
+      {pipelineState === 'loading' && (
+        <DynamicLoadingState
+          currentStep={loadingStep}
+          elapsedSeconds={elapsedSeconds}
+          candidateCount={apiResult?.candidates_evaluated}
+        />
       )}
 
-      {/* Results */}
-      {pipelineState === 'loading' && <LoadingState currentStep={loadingStep} />}
-      {pipelineState === 'success' && <SuccessResults imageFilename={imageFilename} result={apiResult} />}
-      {pipelineState === 'failure' && <FailureResults imageFilename={imageFilename} result={apiResult} />}
+      {/* Search Error State */}
+      {pipelineState === 'search_error' && apiResult && (
+        <>
+          <SearchErrorCard result={apiResult} onRetry={handleRun} />
+          <MetricsRow result={apiResult} />
+        </>
+      )}
 
-      {/* Log */}
-      {logEntries.length > 0 && <PipelineLog entries={logEntries} />}
+      {/* Network / HTTP Error State */}
+      {pipelineState === 'error' && errorMessage && (
+        <ErrorCard message={errorMessage} />
+      )}
+
+      {/* 3. Primary Candidate Result (Verified Match or No Match) */}
+      {apiResult && (pipelineState === 'success' || pipelineState === 'failure') && (
+        <>
+          {apiResult.match_found ? (
+            <VerifiedCandidateCard result={apiResult} />
+          ) : (
+            <UnverifiedCandidateCard result={apiResult} />
+          )}
+
+          {/* 4. Compact 4-column Metrics Row */}
+          <MetricsRow result={apiResult} />
+
+          {/* 5. Blockchain Proof Card (Rendered only if verified candidate match exists) */}
+          {apiResult.match_found && apiResult.blockchain && (
+            <BlockchainProofCard blockchain={apiResult.blockchain} />
+          )}
+        </>
+      )}
+
+      {/* 6. Pipeline Activity Log (Collapsible) */}
+      <PipelineActivityLog entries={logEntries} />
     </div>
   )
 }
 
+// ─── History Page Component ───────────────────────────────────────────────────
 
-// ─── History Page ─────────────────────────────────────────────────────────────
-
-function HistoryPage() {
+function HistoryPage({ historyList }: { historyList: HistoryRecord[] }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-3xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-[#111827] tracking-tight mb-1">Verification History</h1>
-        <p className="text-xs text-[#98A2B3] bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 inline-block">
-          UI representation only — persistent history storage is not implemented in the current backend.
-        </p>
+        <h1 className="text-xl font-bold text-[#111827] tracking-tight mb-0.5">Verification History</h1>
+        <p className="text-xs text-[#667085]">Recorded verification runs during current session.</p>
       </div>
 
-      <Card className="overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-[#F7F8FA] border-b border-[#E5E7EB]">
-              {['Date', 'Input', 'Candidates', 'Similarity', 'Source', 'Blockchain', 'Status'].map(col => (
-                <th key={col} className="text-left text-[10px] font-semibold text-[#98A2B3] uppercase tracking-wider px-5 py-3.5">
-                  {col}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {HISTORY_ROWS.map((row, i) => (
-              <tr key={i} className="border-b border-[#F7F8FA] last:border-0 hover:bg-[#F7F8FA] transition-colors">
-                <td className="px-5 py-4 text-xs text-[#667085]">{row.date}</td>
-                <td className="px-5 py-4 font-mono text-xs text-[#111827]">{row.input}</td>
-                <td className="px-5 py-4 font-mono text-xs text-[#111827]">{row.candidates}</td>
-                <td className="px-5 py-4 font-mono text-xs text-[#111827]">{row.similarity}</td>
-                <td className="px-5 py-4 text-xs text-[#667085]">{row.source}</td>
-                <td className="px-5 py-4">
-                  <span className={cn(
-                    'font-mono text-xs font-medium',
-                    row.blockchain === 'Verified' ? 'text-[#059669]' : 'text-[#98A2B3]'
-                  )}>
-                    {row.blockchain}
-                  </span>
-                </td>
-                <td className="px-5 py-4">
-                  <StatusPill status={row.status === 'success' ? 'success' : 'warning'} label={row.status === 'success' ? 'Verified' : 'No match'} />
-                </td>
+      {historyList.length === 0 ? (
+        <Card className="p-8 text-center">
+          <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-2">
+            <svg width="20" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke="#98A2B3" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
+          <p className="text-xs font-bold text-[#111827] mb-0.5">No verification history yet.</p>
+          <p className="text-[11px] text-[#667085]">Run a verification pipeline to record session results.</p>
+        </Card>
+      ) : (
+        <Card className="overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-[#F7F8FA] border-b border-[#E5E7EB]">
+                {['Date', 'Input File', 'Candidates', 'Similarity', 'Source', 'Blockchain', 'Status'].map(col => (
+                  <th key={col} className="text-left text-[10px] font-bold text-[#98A2B3] uppercase tracking-wider px-4 py-2.5">
+                    {col}
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </Card>
+            </thead>
+            <tbody>
+              {historyList.map((row) => (
+                <tr key={row.id} className="border-b border-[#F7F8FA] last:border-0 hover:bg-[#F7F8FA] transition-colors">
+                  <td className="px-4 py-3 text-[#667085]">{row.date}</td>
+                  <td className="px-4 py-3 font-mono text-[#111827]" title={row.input}>{truncateFilename(row.input, 20)}</td>
+                  <td className="px-4 py-3 font-mono text-[#111827]">{row.candidates}</td>
+                  <td className="px-4 py-3 font-mono text-[#111827]">{row.similarity}</td>
+                  <td className="px-4 py-3 text-[#667085]">{row.source}</td>
+                  <td className="px-4 py-3 font-mono font-semibold text-[#059669]">{row.blockchain}</td>
+                  <td className="px-4 py-3">
+                    <StatusPill status={row.status === 'success' ? 'success' : 'warning'} label={row.status === 'success' ? 'Verified' : 'No match'} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
     </div>
   )
 }
 
-// ─── System Page ──────────────────────────────────────────────────────────────
+// ─── System Page Component ────────────────────────────────────────────────────
 
-function SystemPage() {
+function SystemPage({ healthData, isOnline }: { healthData: SystemHealth | null; isOnline: boolean | null }) {
   const configs = [
-    { label: 'Face Engine', value: 'InsightFace · buffalo_l', mono: true },
-    { label: 'Embedding', value: '512 dimensions', mono: true },
-    { label: 'Search Provider', value: 'Google Lens via SerpApi', mono: false },
-    { label: 'Verification Method', value: 'L2-normalized cosine similarity', mono: false },
-    { label: 'Threshold', value: '0.5000', mono: true },
-    { label: 'Fingerprint', value: 'SHA-256', mono: true },
-    { label: 'Blockchain', value: 'Local SHA-256 hash-chain ledger', mono: false },
-    { label: 'Re-verification', value: 'Enabled', mono: false },
+    { label: 'Backend API Connection', value: isOnline === true ? 'Online (Connected)' : isOnline === false ? 'Offline (Disconnected)' : 'Checking...', mono: false },
+    { label: 'Face Recognition Engine', value: healthData?.face_engine || 'InsightFace · buffalo_l', mono: true },
+    { label: 'Embedding Vector Size', value: healthData?.embedding_dimensions ? `${healthData.embedding_dimensions}D L2-Normalized` : '512D L2-Normalized', mono: true },
+    { label: 'Search Engine Provider', value: healthData?.serpapi_configured ? 'Google Lens via SerpApi (Configured)' : 'Google Lens via SerpApi', mono: false },
+    { label: 'Similarity Algorithm', value: 'L2-normalized cosine similarity', mono: false },
+    { label: 'Verification Threshold', value: healthData?.default_threshold ? healthData.default_threshold.toFixed(4) : '0.5000', mono: true },
+    { label: 'SHA-256 Fingerprint Engine', value: 'Canonical JSON SHA-256 Hash', mono: true },
+    { label: 'Blockchain Ledger', value: healthData?.blockchain || 'Local SHA-256 Hash Chain', mono: false },
   ]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 max-w-3xl mx-auto">
       <div>
-        <h1 className="text-2xl font-bold text-[#111827] tracking-tight mb-1">System Configuration</h1>
-        <p className="text-sm text-[#667085]">Active pipeline configuration — read-only display of backend settings.</p>
+        <h1 className="text-xl font-bold text-[#111827] tracking-tight mb-0.5">System Configuration</h1>
+        <p className="text-xs text-[#667085]">Active pipeline configuration parameters from live API health check.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {configs.map(cfg => (
-          <Card key={cfg.label} className="p-5 hover:border-gray-300 transition-colors">
-            <p className="text-[10px] text-[#98A2B3] uppercase tracking-wider mb-2">{cfg.label}</p>
-            <p className={cn('text-sm font-semibold text-[#111827]', cfg.mono && 'font-mono')}>{cfg.value}</p>
+          <Card key={cfg.label} className="p-3.5 hover:border-gray-300 transition-colors">
+            <p className="text-[10px] font-bold text-[#98A2B3] uppercase tracking-wider mb-1">{cfg.label}</p>
+            <p className={cn('text-xs font-semibold text-[#111827]', cfg.mono && 'font-mono')}>{cfg.value}</p>
           </Card>
         ))}
       </div>
 
-      <Card className="p-5 flex items-start gap-3 bg-blue-50 border-blue-200">
+      <Card className="p-3.5 flex items-start gap-2.5 bg-blue-50/60 border-blue-200">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="flex-shrink-0 mt-0.5">
           <circle cx="8" cy="8" r="6.5" stroke="#2563EB" strokeWidth="1.2" />
           <path d="M8 7v4M8 5.5v.5" stroke="#2563EB" strokeWidth="1.2" strokeLinecap="round" />
         </svg>
-        <p className="text-xs text-blue-800">
-          API credentials are handled server-side and are never displayed in the interface.
+        <p className="text-xs text-blue-900">
+          API keys and backend secret configurations remain fully encapsulated on the server and are never transmitted to the frontend.
         </p>
-      </Card>
-
-      <Card className="p-5">
-        <h3 className="text-sm font-semibold text-[#111827] mb-3">Pipeline Connectivity</h3>
-        <div className="space-y-2">
-          {[
-            { label: 'Face Detection Engine', status: 'online' as const },
-            { label: 'Embedding Generator', status: 'online' as const },
-            { label: 'Google Lens / SerpApi', status: 'online' as const },
-            { label: 'Blockchain Ledger', status: 'online' as const },
-          ].map(item => (
-            <div key={item.label} className="flex items-center justify-between py-2 border-b border-[#F7F8FA] last:border-0">
-              <span className="text-sm text-[#667085]">{item.label}</span>
-              <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-600">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot" />
-                Online
-              </div>
-            </div>
-          ))}
-        </div>
       </Card>
     </div>
   )
 }
 
-// ─── App ──────────────────────────────────────────────────────────────────────
+// ─── Main App Component ───────────────────────────────────────────────────────
 
 export default function App() {
   const [page, setPage] = useState<Page>('verification')
+  const [isOnline, setIsOnline] = useState<boolean | null>(null)
+  const [healthData, setHealthData] = useState<SystemHealth | null>(null)
+  const [historyList, setHistoryList] = useState<HistoryRecord[]>([])
+
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch('/api/health')
+      if (res.ok) {
+        const data: SystemHealth = await res.json()
+        setHealthData(data)
+        setIsOnline(true)
+      } else {
+        setIsOnline(false)
+      }
+    } catch {
+      setIsOnline(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    checkHealth()
+    const timer = setInterval(checkHealth, 15000)
+    return () => clearInterval(timer)
+  }, [checkHealth])
+
+  const handleRecordSuccess = (record: HistoryRecord) => {
+    setHistoryList(prev => [record, ...prev])
+  }
 
   return (
     <div className="min-h-full bg-[#F7F8FA]">
-      <Navbar page={page} setPage={setPage} />
-      <main className="max-w-[1320px] mx-auto px-6 py-8">
-        {page === 'verification' && <VerificationPage />}
-        {page === 'history' && <HistoryPage />}
-        {page === 'system' && <SystemPage />}
+      <Navbar page={page} setPage={setPage} isOnline={isOnline} />
+      <main className="max-w-4xl mx-auto px-4 py-6">
+        {page === 'verification' && <VerificationPage onRecordSuccess={handleRecordSuccess} />}
+        {page === 'history' && <HistoryPage historyList={historyList} />}
+        {page === 'system' && <SystemPage healthData={healthData} isOnline={isOnline} />}
       </main>
     </div>
   )

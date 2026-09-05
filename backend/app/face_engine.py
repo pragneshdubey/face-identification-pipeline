@@ -12,6 +12,37 @@ import cv2
 import numpy as np
 
 
+import threading
+
+
+_SHARED_FACE_ANALYSIS: Optional[object] = None
+_FACE_ANALYSIS_LOCK = threading.Lock()
+
+
+def get_shared_face_analysis(
+    model_name: str = "buffalo_l",
+    providers: Optional[List[str]] = None,
+    prepare_ctx_id: int = -1,
+    det_size: Tuple[int, int] = (640, 640)
+):
+    """
+    Returns a shared, thread-safe global instance of InsightFace FaceAnalysis.
+    Instantiates and prepares the ONNX models once per server process.
+    """
+    global _SHARED_FACE_ANALYSIS
+    if _SHARED_FACE_ANALYSIS is None:
+        with _FACE_ANALYSIS_LOCK:
+            if _SHARED_FACE_ANALYSIS is None:
+                import insightface
+                from insightface.app import FaceAnalysis
+
+                prov = providers if providers is not None else ["CPUExecutionProvider"]
+                app = FaceAnalysis(name=model_name, providers=prov)
+                app.prepare(ctx_id=prepare_ctx_id, det_size=det_size)
+                _SHARED_FACE_ANALYSIS = app
+    return _SHARED_FACE_ANALYSIS
+
+
 @dataclass
 class RecognitionResult:
     """Dataclass representing the result of a face recognition query."""
@@ -137,16 +168,14 @@ class FaceIdentificationEngine:
         self._app = None  # Lazy loading InsightFace FaceAnalysis
 
     def _init_insightface(self):
-        """Lazy initializer for InsightFace FaceAnalysis model."""
+        """Lazy initializer for InsightFace FaceAnalysis model using shared singleton."""
         if self._app is None:
-            import insightface
-            from insightface.app import FaceAnalysis
-
-            self._app = FaceAnalysis(
-                name=self.model_name,
-                providers=self.providers
+            self._app = get_shared_face_analysis(
+                model_name=self.model_name,
+                providers=self.providers,
+                prepare_ctx_id=self.prepare_ctx_id,
+                det_size=self.det_size
             )
-            self._app.prepare(ctx_id=self.prepare_ctx_id, det_size=self.det_size)
 
     @staticmethod
     def load_image(image_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:

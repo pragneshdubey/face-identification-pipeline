@@ -86,5 +86,37 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("exceeds maximum limit of 10 MB", response.json()["detail"])
 
 
+    def test_verify_endpoint_with_valid_crop_box(self):
+        sample_img = os.path.join(PROJECT_ROOT, "data", "test_images", "einstein_demo.jpg")
+        if not os.path.exists(sample_img):
+            self.skipTest(f"Sample image '{sample_img}' not found.")
+
+        response = self.client.post(
+            "/api/verify",
+            data={
+                "provider": "mock",
+                "threshold": 0.5,
+                "image_name": "einstein_demo.jpg",
+                "crop_box": "500,300,2800,3100"
+            }
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["success"])
+        self.assertTrue(data["face_detected"])
+
+    def test_verify_endpoint_invalid_crop_box_format(self):
+        response = self.client.post(
+            "/api/verify",
+            data={
+                "provider": "mock",
+                "image_name": "einstein_demo.jpg",
+                "crop_box": "invalid_coords"
+            }
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid crop_box format", response.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
